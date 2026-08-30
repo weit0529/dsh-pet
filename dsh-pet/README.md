@@ -31,7 +31,9 @@ dsh plugin --profile web add dsh-pet@hevc     # Safari 版（HEVC-alpha mov）
 
 ## ✨ 功能特性
 
-- **纯粹的桌宠**：不掺业务功能——没有天气查询、系统监控、Agent 状态感知，就一件事：陪你。零核心改动、零模型成本（运行时零 LLM/API 调用）
+- **DeepSeek Harness 原生插件**：只使用 DSH 的插件服务、槽位与 `session/event`，不修改 Harness 内核
+- **余额与单轮费用**：按当前 DSH 会话实际选择的 provider/model 查询余额；DeepSeek 对话完成后按实际 token usage 和对应模型单价显示本轮费用，切换会话不串值
+- **系统通知**：窗口失焦时可通知对话完成、生成失败、权限申请和待回答问题，权限只在用户点击时申请
 - **手绘风透明动画**：待机呼吸、打瞌睡、玩魔方、哼歌、炸毛、吐泡泡、玩水枪、小提琴演奏、蓝鲸现世、吃白饭、照镜子、三支舞、写代码、四季动作（放风筝、堆雪人、吃冰淇淋、放烟花……）全部无缝衔接
 - **永不停止的动画链**：每段动画播完立即按概率选下一个（30% 待机 / 10% 转向 / 40% 动作 / 20% 移动）
 - **屏幕漫游**：朝 facing 方向行走，自动检查空间、不走出屏幕
@@ -43,10 +45,12 @@ dsh plugin --profile web add dsh-pet@hevc     # Safari 版（HEVC-alpha mov）
 
 ## ⚙️ 配置
 
-| 配置项                 | 说明                                                                                                                                            |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| 设置页「桌宠配置」     | DSH 设置 → 桌宠配置：图形化编辑**大小 / 位置 / 边距**，支持**多开**（添加/删除宠物，每只独立配置）；保存**即时生效**，恢复默认回落 config.jsonc |
-| `pets`（config.jsonc） | 默认宠物列表：`[{ "id", "size", "position": { "corner", "marginX", "marginY" } }]`；多只即多开，首只为「添加宠物」的默认模板                    |
+| 配置项                     | 说明                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 设置页「桌宠配置」         | DSH 设置 → 桌宠配置：图形化编辑**大小 / 位置 / 边距**，支持**多开**（添加/删除宠物，每只独立配置）；保存**即时生效**，恢复默认回落 config.jsonc |
+| `pets`（config.jsonc）     | 默认宠物列表：`[{ "id", "size", "position": { "corner", "marginX", "marginY" } }]`；多只即多开，首只为「添加宠物」的默认模板                    |
+| `eventsRefreshSec.balance` | 余额刷新周期，默认 180 秒；点击桌宠或执行 `/balance` 可立即刷新                                                                                 |
+| `deepseekFullBalanceCny`   | DeepSeek 钱袋档位的满额参考值，默认 20 元                                                                                                       |
 
 > 说明：插件安装即用，配置均为可选；设置页保存的用户覆盖写入 `$DSH_HOME/dsh-pet/main-config.json`（用户层，优先于包内默认）。
 
@@ -56,8 +60,8 @@ dsh plugin --profile web add dsh-pet@hevc     # Safari 版（HEVC-alpha mov）
 
 | 层               | 路径                                 | 作用                                                                                              |
 | ---------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| 默认配置（只读） | 包内 `assets/config.jsonc`           | 完整结构参考：宠物列表 / 动画池（idle/turn/drag/clicks/moves/categories）/ 播放权重               |
-| 用户配置         | `$DSH_HOME/dsh-pet/main-config.json` | 覆盖片段：可整体覆盖 `pets` / `animations` / `animationWeights`，缺省字段回落默认                 |
+| 默认配置（只读） | 包内 `assets/config.jsonc`           | 完整结构参考：桌宠 / 动画 / 通知 / 余额刷新与满额基准                                             |
+| 用户配置         | `$DSH_HOME/dsh-pet/main-config.json` | 覆盖片段：支持 `pets` / 动画配置 / 通知 / 刷新周期 / `pricing.models`，未提交字段会保留           |
 | 用户动画（可选） | `$DSH_HOME/dsh-pet/main-animation/`  | 放入 `.webm` / `.mov` 即可作为动画播放，**优先于包内素材**（按扩展名进 `webm/` 或 `mov/` 子目录） |
 
 - 设置页底部会显示这些路径
@@ -86,12 +90,12 @@ dsh plugin --profile web remove dsh-pet
 > 动画为透明背景；GIF 预览中透明部分显示为页面底色，实际播放为透明。
 
 <p>
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/daiji-huxi-xiuxian.gif" width="160" alt="待机呼吸休闲" title="待机呼吸休闲">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/dongzhangxiwang.gif" width="160" alt="东张西望" title="东张西望">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/yuandi-piaofu-tabu.gif" width="160" alt="原地漂浮踏步" title="原地漂浮踏步">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/yuandi-xiaoqi-chenmian.gif" width="160" alt="原地小憩沉眠" title="原地小憩沉眠">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/dianji-huiying-kaixin-yuedong.gif" width="160" alt="点击回应 - 开心跃动" title="点击回应 - 开心跃动">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/beishubiao-tuozhuai-xuankong-fankui.gif" width="160" alt="被鼠标拖拽悬空反馈" title="被鼠标拖拽悬空反馈">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/daiji-huxi-xiuxian.gif" width="160" alt="待机呼吸休闲" title="待机呼吸休闲">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/dongzhangxiwang.gif" width="160" alt="东张西望" title="东张西望">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/yuandi-piaofu-tabu.gif" width="160" alt="原地漂浮踏步" title="原地漂浮踏步">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/yuandi-xiaoqi-chenmian.gif" width="160" alt="原地小憩沉眠" title="原地小憩沉眠">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/dianji-huiying-kaixin-yuedong.gif" width="160" alt="点击回应 - 开心跃动" title="点击回应 - 开心跃动">
+  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/dsh-pet/assets/preview/beishubiao-tuozhuai-xuankong-fankui.gif" width="160" alt="被鼠标拖拽悬空反馈" title="被鼠标拖拽悬空反馈">
 </p>
 
 全部动画见仓库：`dsh-pet/assets/webm/`（VP9-alpha）与 `dsh-pet/assets/mov/`（HEVC-alpha）。

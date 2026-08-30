@@ -8,32 +8,33 @@
  *   /dsh-pet-7340/thumb/<动画名>.<ext>  → 按扩展名分流：.webm→$DSH_HOME/dsh-pet/main-animation/webm（用户目录，优先）→ 包内 assets/webm；
  *                                       .mov → $DSH_HOME/dsh-pet/main-animation/mov（用户目录，优先）→ 包内 assets/mov
  *   /dsh-pet-7340/config.jsonc        → 插件包内 assets/config.jsonc（默认值，只读）
- *   /dsh-pet-7340/config              → 用户覆盖配置（pets / animations / animationWeights，JSON）
+ *   /dsh-pet-7340/config              → 用户覆盖配置（局部更新并保留未提交字段，JSON）
  *                                GET 读取、PUT 保存、DELETE 恢复默认（删除用户层）
  *   /dsh-pet-7340/config/meta         → 配置文件与素材目录路径（设置页展示用）
- *   /dsh-pet-7340/balance             → 当前服务商余额（client 轮询）
- *   /dsh-pet-7340/balance/trigger     → 手动触发计数（/balance 命令）
- *   /dsh-pet-7340/turn-spend          → 最近一轮对话的余额消耗（client 轮询）
+ *   /dsh-pet-7340/balance?sessionId=  → 指定 DSH 会话当前服务商的余额
+ *   /dsh-pet-7340/balance/trigger     → 按会话隔离的手动触发计数（/balance 命令）
+ *   /dsh-pet-7340/turn-spend          → 指定会话最近一轮 DeepSeek token 费用
  *
  * 安全性：resolveAsset 做"防穿越"校验，保证路径仍在对应根目录内。
  *
  * TODO(类型)：peer 依赖类型包本地暂不可解析，ctx/req/res 暂用 any；
  *             依赖可解析后替换为 DSH 官方类型。
  */
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, realpathSync } from 'node:fs';
 import { readFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { queryBalance, type BalanceResult } from './balance';
-import { createPricingManager, DEFAULT_PRICING, type Pricing } from './pricing';
+import { matchBalanceProvider, queryBalance, type BalanceResult } from './balance';
+import { calculateTokenCost, createPricingManager, type Pricing, type PricingSource } from './pricing-catalog';
+import { asJsonObject, mergeUserConfig, sanitizeUserConfigPatch, type JsonObject } from './user-config';
 
 /** 插件行 id（与 cordis.patch.yml 一致） */
 export const name = 'pet';
-/** 需要注入的服务：webServer（路由）+ agentDefaultModel（当前服务商）+ credentials（凭证）+ commands（/balance 斜杠命令） */
-export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'commands'];
+/** 需要注入的服务：路由、默认模型、凭证、命令和会话存储 */
+export const inject = ['webServer', 'agentDefaultModel', 'credentials', 'commands', 'sessions'];
 
 /** 本包目录：宿主构建产物位于 lib/，其上一级即包根。 */
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -69,24 +70,34 @@ function resolveAsset(root: string, rel: string): string | undefined {
 /** 在 root 下解析并确认实体存在；非法（穿越）或不存在时返回 undefined */
 function resolveExisting(root: string, rel: string): string | undefined {
   const candidate = resolveAsset(root, rel);
-  return candidate && existsSync(candidate) ? candidate : undefined;
+  if (!candidate || !existsSync(candidate) || !existsSync(root)) return undefined;
+  try {
+    const realRoot = realpathSync(root);
+    const realCandidate = realpathSync(candidate);
+    const rootWithSep = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+    return realCandidate.startsWith(rootWithSep) ? realCandidate : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 流式返回一个文件（带 Content-Type / 长度 / 缓存头）。 */
-async function sendFile(res: ServerResponse, file: string, contentType: string): Promise<void> {
+async function sendFile(
+  res: ServerResponse,
+  file: string,
+  contentType: string,
+  cacheControl = 'public, max-age=3600',
+): Promise<void> {
   const { size } = await stat(file);
   res.writeHead(200, {
     'content-type': contentType,
     'content-length': size,
-    'cache-control': 'public, max-age=3600',
+    'cache-control': cacheControl,
   });
   const stream = createReadStream(file);
   stream.on('error', () => res.destroy());
   stream.pipe(res);
 }
-
-/** 支持的角落白名单（与 client 端一致） */
-const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 
 /**
  * DeepSeek 峰谷计价档位（北京时间）——与 client/balance.ts 的 deepseekPricingTier 同逻辑，
@@ -113,50 +124,41 @@ function sendJson(res: ServerResponse, status: number, obj: unknown): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
   });
   res.end(body);
 }
 
-/** 收集请求体（文本） */
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve2, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => resolve2(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
+const MAX_CONFIG_BODY_BYTES = 1_000_000;
+const MAX_SESSION_ID_LENGTH = 256;
+
+function validSessionId(value: string | null): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SESSION_ID_LENGTH;
 }
 
-/** 校验并归一化用户配置：只接受 { pets: [...] }，可选顶层 notificationsEnabled（布尔） */
-function sanitizeUserConfig(raw: unknown): { pets: unknown[]; notificationsEnabled?: boolean } | null {
-  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-  const arr = Array.isArray(o.pets) ? o.pets : null;
-  if (!arr || !arr.length) return null;
-  const out: unknown[] = [];
-  for (const p of arr) {
-    if (!p || typeof p !== 'object') return null;
-    const pp = p as Record<string, unknown>;
-    const id = String(pp.id ?? '');
-    // 有意过滤文件名非法字符（Windows 保留符 + 控制字符），防止配置值逃逸 main-config.json 路径
-    // eslint-disable-next-line no-control-regex
-    if (!id || id.length > 64 || /[\\/:\x00-\x1f]/.test(id)) return null;
-    const size = Number(pp.size);
-    if (!Number.isFinite(size) || size <= 0) return null;
-    const balanceEnabled = pp.balanceEnabled;
-    if (typeof balanceEnabled !== 'boolean') return null;
-    const pos = pp.position && typeof pp.position === 'object' ? (pp.position as Record<string, unknown>) : {};
-    const corner = String(pos.corner ?? '');
-    if (!CORNERS.includes(corner)) return null;
-    const marginX = Number(pos.marginX);
-    const marginY = Number(pos.marginY);
-    if (!Number.isFinite(marginX) || !Number.isFinite(marginY)) return null;
-    out.push({ id, size, balanceEnabled, position: { corner, marginX, marginY } });
-  }
-  const ne = o.notificationsEnabled;
-  if (ne !== undefined && typeof ne !== 'boolean') return null;
-  const outConfig: { pets: unknown[]; notificationsEnabled?: boolean } = { pets: out };
-  if (ne !== undefined) outConfig.notificationsEnabled = ne;
-  return outConfig;
+/** 收集有上限的请求体，防止配置接口被超大 body 占满内存 */
+function readBody(req: IncomingMessage, maxBytes = MAX_CONFIG_BODY_BYTES): Promise<string> {
+  return new Promise((resolve2, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let tooLarge = false;
+    req.on('data', (chunk: Buffer | string) => {
+      if (tooLarge) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > maxBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(bytes);
+    });
+    req.on('end', () => {
+      if (tooLarge) reject(new Error('request-body-too-large'));
+      else resolve2(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', reject);
+  });
 }
 
 /** 宿主插件主体：注册 `/dsh-pet-7340` 前缀路由。 */
@@ -164,175 +166,262 @@ function sanitizeUserConfig(raw: unknown): { pets: unknown[]; notificationsEnabl
 export function apply(ctx: any): void {
   // 用户数据根：配置与用户素材统一收敛于此（扩展包按 <插件id> 各自建目录）
   const userRoot = join(resolveDshHome(), 'dsh-pet');
-  // 用户覆盖配置（pets / animations / animationWeights 覆盖片段）
+  // 用户覆盖配置（设置页局部保存；高级配置与未来字段会保留）
   const userConfigPath = join(userRoot, 'main-config.json');
   // 用户动画目录（thumb 播放时优先于包内素材；按扩展名在 webm/mov 子目录分流）
   const thumbUserRoot = join(userRoot, 'main-animation');
-  // 手动触发计数：/balance 命令 +1，client 轮询变化后立即刷新余额并播动画（进程内内存态，重启归零）
-  let balanceTriggerCount = 0;
+  // 手动触发计数按会话隔离：/balance 只唤醒发出命令的那一个会话页面。
+  const balanceTriggerCounts = new Map<string, number>();
 
-  // ---- 每轮对话余额消耗统计（turn-spend）----
-  // 双数据源（取可靠者）：
-  //   1) token 用量（精确）：监听 assistant/message 的 usage，按 DeepSeek 官方单价折算每轮成本。
-  //      单价从官方定价文档 https://api-docs.deepseek.com/quick_start/pricing/ 爬取（PricingManager），
-  //      启动抓取一次 + 每 6 小时刷新；失败回落内置默认。用户可在 main-config.json 的 pricing 段覆盖。
-  //   2) 余额差值（真实）：turn/start 与 turn/end(completed) 各查一次余额，差值作为真实消耗。
-  //      余额接口精度 0.01 元，单轮消耗通常 < 0.005 元 → 差值法常失效，token 法是主数据源。
-  // 内存态：进程重启归零；多会话按 sessionId 独立记账，互不串扰。
-  // 定价管理器：从官网爬取 deepseek-v4-flash 单价（用户配置 pricing 覆盖优先）。
-  const pricingManager = createPricingManager('deepseek-v4-flash');
-  // 用户配置覆盖：main-config.json 顶层 "pricing"（元/百万，若用户提供则优先于官网人民币价）
-  // 注意：官网中文价为人民币（CNY），与余额币种 CNY 对齐；用户覆盖同样按 CNY。
-  let pricingOverride: Pricing | null = null;
-  void (async () => {
+  // 余额请求单飞：同一 provider 同时只允许一个上游请求，短暂复用结果吸收点击/轮询抖动。
+  const balanceInFlight = new Map<string, Promise<BalanceResult>>();
+  const balanceRecent = new Map<string, { at: number; value: BalanceResult }>();
+  const BALANCE_CACHE_MS = 1_000;
+  const fetchProviderBalance = (provider: string): Promise<BalanceResult> => {
+    const recent = balanceRecent.get(provider);
+    if (recent && Date.now() - recent.at <= BALANCE_CACHE_MS) return Promise.resolve(recent.value);
+    const current = balanceInFlight.get(provider);
+    if (current) return current;
+    const request = queryBalance(provider, async (ref) => {
+      const resolved = await ctx.credentials.resolve(credentialRef(ref));
+      return resolved?.value;
+    })
+      .then((value) => {
+        balanceRecent.set(provider, { at: Date.now(), value });
+        return value;
+      })
+      .finally(() => balanceInFlight.delete(provider));
+    balanceInFlight.set(provider, request);
+    return request;
+  };
+
+  type ModelSelection = { provider: string; model: string };
+  const defaultSelection = (): ModelSelection => {
+    const selection = ctx.agentDefaultModel.currentSelection();
+    return { provider: String(selection.provider), model: String(selection.model) };
+  };
+  const selectionForSession = (sessionId: string | null): ModelSelection => {
+    if (sessionId) {
+      const session = ctx.sessions.get(sessionId);
+      const header = session?.requestHeader?.();
+      const provider = header?.config?.provider;
+      const model = header?.config?.model;
+      if (typeof provider === 'string' && provider && typeof model === 'string' && model) return { provider, model };
+    }
+    return defaultSelection();
+  };
+  const isDeepseekProvider = (provider: string): boolean => matchBalanceProvider(provider)?.kind === 'deepseek';
+
+  // ---- 用户定价覆盖：旧 flat 格式只覆盖 flash；新 models 格式逐模型覆盖 ----
+  const pricingManager = createPricingManager();
+  const pricingOverrides = new Map<string, Partial<Pricing>>();
+  const loadPricingOverrides = async (): Promise<void> => {
+    pricingOverrides.clear();
     try {
-      const raw = await readFile(userConfigPath, 'utf8');
-      const parsed = JSON.parse(raw) as { pricing?: Record<string, unknown> };
-      const p = parsed?.pricing;
-      if (p && typeof p === 'object') {
-        const num = (v: unknown, fallback: number): number =>
-          typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-        pricingOverride = {
-          input: num(p.input, DEFAULT_PRICING.input),
-          output: num(p.output, DEFAULT_PRICING.output),
-          cacheRead: num(p.cacheRead, DEFAULT_PRICING.cacheRead),
-          peakMultiplier: num(p.peakMultiplier, DEFAULT_PRICING.peakMultiplier),
-          currency: typeof p.currency === 'string' && p.currency ? String(p.currency) : DEFAULT_PRICING.currency,
-        };
+      const parsed = asJsonObject(JSON.parse(await readFile(userConfigPath, 'utf8')));
+      const pricing = asJsonObject(parsed?.pricing);
+      if (!pricing) return;
+      const readEntry = (entry: JsonObject): Partial<Pricing> => {
+        const out: Partial<Pricing> = {};
+        for (const key of ['input', 'cacheRead', 'output', 'peakMultiplier'] as const) {
+          if (typeof entry[key] === 'number' && Number.isFinite(entry[key])) out[key] = entry[key];
+        }
+        if (typeof entry.currency === 'string' && entry.currency) out.currency = entry.currency;
+        return out;
+      };
+      const legacy = readEntry(pricing);
+      if (Object.keys(legacy).length > 0) pricingOverrides.set('deepseek-v4-flash', legacy);
+      const models = asJsonObject(pricing.models);
+      if (models) {
+        for (const [modelId, value] of Object.entries(models)) {
+          const entry = asJsonObject(value);
+          if (entry) pricingOverrides.set(modelId.trim().toLowerCase(), readEntry(entry));
+        }
       }
     } catch {
-      /* 无用户配置或解析失败：回落官网/默认 */
+      /* 配置不存在或暂时不可读：使用官方/内置目录 */
     }
-  })();
-  // 启动官网定价抓取（失败回落默认，不阻塞）
+  };
+  const pricingFor = (modelId: string): { pricing?: Pricing; source: PricingSource | 'user-override' } => {
+    const key = modelId.trim().toLowerCase();
+    const base = pricingManager.current(key);
+    const override = pricingOverrides.get(key);
+    if (!override) return { pricing: base, source: pricingManager.source(key) };
+    const input = override.input ?? base?.input;
+    const cacheRead = override.cacheRead ?? base?.cacheRead;
+    const output = override.output ?? base?.output;
+    if (input === undefined || cacheRead === undefined || output === undefined) {
+      return { source: 'unavailable' };
+    }
+    return {
+      pricing: {
+        input,
+        cacheRead,
+        output,
+        peakMultiplier: override.peakMultiplier ?? base?.peakMultiplier ?? 2,
+        currency: override.currency ?? base?.currency ?? 'CNY',
+      },
+      source: 'user-override',
+    };
+  };
+  void loadPricingOverrides();
   pricingManager.start();
-  const getPricing = (): Pricing => pricingOverride ?? pricingManager.current();
-  const turnBaselines = new Map<string, Promise<number | null>>();
-  // 每轮 token 用量（按 turn 累加；assistant/message 的 usage 是本步用量）
-  const turnTokenUsage = new Map<string, { input: number; output: number; cacheRead: number }>();
-  let turnSpendCount = 0;
-  let lastTurnSpend: { count: number; amount: number; currency: string; at: number } | null = null;
-  // 诊断：记录最近收到的会话事件样本与结算情况（通过 /turn-spend/debug 查看，定位监听是否生效）
-  const eventDiag: { at: number; sessionId: string; type: string; turn?: number; reasonKind?: string }[] = [];
-  const diagAppend = (sessionId: string, type: string, data?: { turn?: number; reason?: { kind?: string } }) => {
-    eventDiag.push({ at: Date.now(), sessionId, type, turn: data?.turn, reasonKind: data?.reason?.kind });
+
+  // ---- 每轮对话消费：按 session + turn + 实际 provider/model/时段累加 ----
+  type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+  type UsageBucket = Usage & { model: string; peak: boolean };
+  type TurnState = {
+    turn: number;
+    route?: ModelSelection;
+    buckets: Map<string, UsageBucket>;
+    hasNonDeepseekUsage: boolean;
+  };
+  type TurnSpend = {
+    count: number;
+    amount: number;
+    currency: string;
+    at: number;
+    models: string[];
+  };
+  const turns = new Map<string, TurnState>();
+  const spendBySession = new Map<string, TurnSpend>();
+  const eventDiag: { at: number; type: string; turn?: number; reasonKind?: string }[] = [];
+  const diagAppend = (type: string, data?: { turn?: number; reason?: { kind?: string } }) => {
+    eventDiag.push({ at: Date.now(), type, turn: data?.turn, reasonKind: data?.reason?.kind });
     if (eventDiag.length > 60) eventDiag.shift();
   };
-
-  /** 按当前时段（峰/谷）+ token 数计算成本（币种 CNY：官网人民币价）；
-   *  仅 deepseek 服务商启用 */
-  const estimateCostByTokens = (
-    usage: { input: number; output: number; cacheRead: number },
-    isPeak: boolean,
-  ): { amount: number; currency: string } => {
-    const p = getPricing();
-    const m = p.peakMultiplier > 0 ? p.peakMultiplier : 1;
-    const mult = isPeak ? m : 1;
-    const cost =
-      ((usage.input * p.input + usage.cacheRead * p.cacheRead + usage.output * p.output) / 1_000_000) * mult;
-    return { amount: cost, currency: p.currency };
+  const safeToken = (value: unknown): number => {
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
   };
 
-  /** 查询当前 DeepSeek 余额（数字金额 + 币种）；非 deepseek 服务商 / 失败 → null */
-  const queryBalanceNow = async (): Promise<{ total: number; currency: string } | null> => {
-    try {
-      const sel = ctx.agentDefaultModel.currentSelection();
-      const result = await queryBalance(sel.provider, async (ref) => {
-        const rc = await ctx.credentials.resolve(credentialRef(ref));
-        return rc?.value;
-      });
-      if (result.ok && result.kind === 'deepseek') {
-        const total = Number(result.data.total);
-        if (!Number.isFinite(total)) return null;
-        return { total, currency: result.data.currency };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  // 会话事件监听：turn/start 记基线 → assistant/message 累加 token → turn/end(completed) 结算
   ctx.on(
     'session/event',
     (
-      session: { id: unknown },
+      session: { id: unknown; requestHeader?: () => { config?: { provider?: string; model?: string } } | undefined },
       event: {
         type: string;
+        time?: number;
         data?: {
           turn?: number;
           reason?: { kind?: string };
-          usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
+          header?: { config?: { provider?: string; model?: string } };
+          usage?: {
+            inputTokens?: number;
+            outputTokens?: number;
+            cacheReadTokens?: number;
+            cacheWriteTokens?: number;
+          };
         };
       },
     ) => {
-      const sessionId = String((session as { id?: unknown })?.id ?? 'unknown');
-      diagAppend(sessionId, event.type, event.data as { turn?: number; reason?: { kind?: string } });
+      const sessionId = String(session.id ?? '');
+      if (!sessionId) return;
+      diagAppend(event.type, event.data);
+
       if (event.type === 'turn/start') {
-        turnBaselines.set(sessionId, queryBalanceNow().then((r) => (r ? r.total : null)));
-        turnTokenUsage.set(sessionId, { input: 0, output: 0, cacheRead: 0 });
+        turns.set(sessionId, {
+          turn: Number(event.data?.turn ?? -1),
+          buckets: new Map(),
+          hasNonDeepseekUsage: false,
+        });
         return;
       }
-      if (event.type === 'assistant/message') {
-        const u = event.data?.usage;
-        if (u && (u.inputTokens || u.outputTokens || u.cacheReadTokens)) {
-          const acc = turnTokenUsage.get(sessionId) ?? { input: 0, output: 0, cacheRead: 0 };
-          acc.input += u.inputTokens ?? 0;
-          acc.output += u.outputTokens ?? 0;
-          acc.cacheRead += u.cacheReadTokens ?? 0;
-          turnTokenUsage.set(sessionId, acc);
+
+      const state = turns.get(sessionId);
+      if (event.type === 'request/header') {
+        if (!state) return;
+        const provider = event.data?.header?.config?.provider;
+        const model = event.data?.header?.config?.model;
+        if (typeof provider === 'string' && provider && typeof model === 'string' && model) {
+          state.route = { provider, model };
         }
         return;
       }
-      if (event.type === 'turn/end' && event.data?.reason?.kind === 'completed') {
-        const baselineP = turnBaselines.get(sessionId);
-        turnBaselines.delete(sessionId);
-        const usage = turnTokenUsage.get(sessionId);
-        turnTokenUsage.delete(sessionId);
-        void (async () => {
-          const [baseline, current] = await Promise.all([baselineP ?? Promise.resolve(null), queryBalanceNow()]);
-          // 数据源 1：token 用量估算（精确，主数据源）
-          let amount: number | null = null;
-          let currency = 'CNY';
-          if (usage && (usage.input + usage.output + usage.cacheRead) > 0) {
-            const isPeak = isDeepseekPeakNow();
-            const est = estimateCostByTokens(usage, isPeak);
-            amount = est.amount;
-            currency = est.currency;
-            if (amount < 0.0001) amount = null; // token 数太少（几乎 0）：不显示
-          }
-          // 数据源 2：余额差值（真实消耗，覆盖 token 估算——余额确实变了就以余额为准）
-          if (baseline !== null && current !== null && baseline - current.total >= 0.005) {
-            amount = baseline - current.total;
-            currency = current.currency;
-          }
-          if (amount === null || amount <= 0) {
-            console.warn(
-              '[dsh-pet] turn-spend 跳过结算 session=' +
-                sessionId +
-                ' tokens=' +
-                (usage ? usage.input + 'i/' + usage.output + 'o/' + usage.cacheRead + 'c' : 'none') +
-                ' balanceDiff=' +
-                (baseline !== null && current !== null ? (baseline - current.total).toFixed(4) : 'n/a'),
-            );
-            return;
-          }
-          turnSpendCount += 1;
-          lastTurnSpend = { count: turnSpendCount, amount, currency, at: Date.now() };
-          console.log(
-            '[dsh-pet] ' +
-              new Date().toTimeString().slice(0, 8) +
-              ' turn-spend session=' +
-              sessionId +
-              ' amount=' +
-              amount.toFixed(4) +
-              ' ' +
-              currency +
-              ' tokens=' +
-              (usage ? usage.input + 'i/' + usage.output + 'o/' + usage.cacheRead + 'c' : 'n/a'),
-          );
-        })();
+
+      if (event.type === 'assistant/message') {
+        if (!state) return;
+        const usage = event.data?.usage;
+        if (!usage) return;
+        const input = safeToken(usage.inputTokens);
+        const output = safeToken(usage.outputTokens);
+        const cacheRead = safeToken(usage.cacheReadTokens);
+        const cacheWrite = safeToken(usage.cacheWriteTokens);
+        if (input + output + cacheRead + cacheWrite === 0) return;
+
+        const header = session.requestHeader?.();
+        const fallbackRoute =
+          typeof header?.config?.provider === 'string' && typeof header?.config?.model === 'string'
+            ? { provider: header.config.provider, model: header.config.model }
+            : undefined;
+        const route = state.route ?? fallbackRoute;
+        if (!route || !isDeepseekProvider(route.provider)) {
+          state.hasNonDeepseekUsage = true;
+          return;
+        }
+
+        const peak = isDeepseekPeakNow(new Date(event.time ?? Date.now()));
+        const key = route.model.trim().toLowerCase() + '|' + (peak ? 'peak' : 'idle');
+        const bucket = state.buckets.get(key) ?? {
+          model: route.model.trim().toLowerCase(),
+          peak,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        };
+        bucket.input += input;
+        bucket.output += output;
+        bucket.cacheRead += cacheRead;
+        bucket.cacheWrite += cacheWrite;
+        state.buckets.set(key, bucket);
+        return;
       }
+
+      if (event.type !== 'turn/end') return;
+      turns.delete(sessionId);
+      if (event.data?.reason?.kind !== 'completed' || !state || state.hasNonDeepseekUsage || state.buckets.size === 0) {
+        return;
+      }
+
+      let amount = 0;
+      const currencies = new Set<string>();
+      const models = new Set<string>();
+      for (const bucket of state.buckets.values()) {
+        const resolved = pricingFor(bucket.model);
+        if (!resolved.pricing) {
+          console.warn('[dsh-pet] turn-spend 跳过：没有模型 ' + bucket.model + ' 的定价');
+          return;
+        }
+        models.add(bucket.model);
+        currencies.add(resolved.pricing.currency);
+        amount += calculateTokenCost(bucket, resolved.pricing, bucket.peak);
+      }
+      if (currencies.size !== 1) {
+        console.warn('[dsh-pet] turn-spend 跳过：同一轮出现多个计费币种');
+        return;
+      }
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      const currency = currencies.values().next().value as string;
+
+      const previous = spendBySession.get(sessionId);
+      const settled: TurnSpend = {
+        count: (previous?.count ?? 0) + 1,
+        amount,
+        currency,
+        at: Date.now(),
+        models: [...models],
+      };
+      spendBySession.delete(sessionId);
+      spendBySession.set(sessionId, settled);
+      while (spendBySession.size > 200) {
+        const oldest = spendBySession.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        spendBySession.delete(oldest);
+      }
+      console.log(
+        '[dsh-pet] turn-spend amount=' + amount.toFixed(6) + ' ' + currency + ' model=' + settled.models.join(','),
+      );
     },
   );
 
@@ -344,6 +433,13 @@ export function apply(ctx: any): void {
   const userRootFor = (ext: string): string =>
     ext === '.mov' ? join(thumbUserRoot, 'mov') : join(thumbUserRoot, 'webm');
 
+  const readUserConfig = async (): Promise<JsonObject> => {
+    if (!existsSync(userConfigPath)) return {};
+    const parsed = asJsonObject(JSON.parse(await readFile(userConfigPath, 'utf8')));
+    if (!parsed) throw new Error('existing user config is not a JSON object');
+    return parsed;
+  };
+
   ctx.effect(
     () =>
       ctx.webServer.register({
@@ -351,45 +447,80 @@ export function apply(ctx: any): void {
         path: ROUTE_PREFIX,
         handler: async (req: IncomingMessage, res: ServerResponse) => {
           const url = new URL(req.url ?? '/', 'http://localhost');
-          const rest = decodeURIComponent(url.pathname.slice(ROUTE_PREFIX.length + 1));
+          let rest: string;
+          try {
+            rest = decodeURIComponent(url.pathname.slice(ROUTE_PREFIX.length + 1));
+          } catch {
+            sendJson(res, 400, { error: 'malformed URL encoding' });
+            return;
+          }
 
           // 用户覆盖配置：/dsh-pet-7340/config（GET / PUT / DELETE）
           if (rest === 'config') {
             if (req.method === 'GET') {
+              if (!existsSync(userConfigPath)) {
+                sendJson(res, 200, {});
+                return;
+              }
               try {
                 const raw = await readFile(userConfigPath, 'utf8');
                 sendJson(res, 200, JSON.parse(raw));
-              } catch {
-                sendJson(res, 200, {}); // 无覆盖配置 → 空对象，client 回落默认
+              } catch (error) {
+                sendJson(res, 500, {
+                  error: 'user config is unreadable',
+                  message: error instanceof Error ? error.message : String(error),
+                });
               }
               return;
             }
             if (req.method === 'PUT') {
+              let body: string;
               try {
-                const body = await readBody(req);
-                const parsed = JSON.parse(body);
-                const clean = sanitizeUserConfig(parsed);
-                if (!clean) {
-                  sendJson(res, 400, {
-                    error:
-                      'invalid pet config: expected { pets:[{id,size,balanceEnabled,position:{corner,marginX,marginY}}] }（可选顶层 notificationsEnabled 布尔）',
-                  });
-                  return;
-                }
-                await mkdir(userRoot, { recursive: true });
-                await writeFile(userConfigPath, JSON.stringify(clean, null, 2), 'utf8');
-                sendJson(res, 200, { ok: true });
+                body = await readBody(req);
+              } catch (error) {
+                const tooLarge = error instanceof Error && error.message === 'request-body-too-large';
+                sendJson(res, tooLarge ? 413 : 400, {
+                  error: tooLarge ? 'config body too large' : 'invalid request body',
+                });
+                return;
+              }
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(body);
               } catch {
                 sendJson(res, 400, { error: 'invalid JSON body' });
+                return;
+              }
+              const cleanPatch = sanitizeUserConfigPatch(parsed);
+              if (!cleanPatch) {
+                sendJson(res, 400, { error: 'invalid config patch' });
+                return;
+              }
+              try {
+                const merged = mergeUserConfig(await readUserConfig(), cleanPatch);
+                await mkdir(userRoot, { recursive: true });
+                await writeFile(userConfigPath, JSON.stringify(merged, null, 2), 'utf8');
+                await loadPricingOverrides();
+                sendJson(res, 200, { ok: true });
+              } catch (error) {
+                sendJson(res, 500, {
+                  error: 'failed to save user config',
+                  message: error instanceof Error ? error.message : String(error),
+                });
               }
               return;
             }
             if (req.method === 'DELETE') {
               try {
                 await rm(userConfigPath, { force: true });
-              } catch {
-                /* 不存在也视为成功 */
+              } catch (error) {
+                sendJson(res, 500, {
+                  error: 'failed to delete user config',
+                  message: error instanceof Error ? error.message : String(error),
+                });
+                return;
               }
+              await loadPricingOverrides();
               sendJson(res, 200, { ok: true });
               return;
             }
@@ -399,6 +530,10 @@ export function apply(ctx: any): void {
 
           // 配置文件路径（设置页「高级配置」展示用）
           if (rest === 'config/meta') {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
             sendJson(res, 200, {
               user: userConfigPath,
               default: join(PACKAGE_ROOT, 'assets', 'config.jsonc'),
@@ -414,12 +549,14 @@ export function apply(ctx: any): void {
               return;
             }
             try {
-              const sel = ctx.agentDefaultModel.currentSelection();
-              const result: BalanceResult = await queryBalance(sel.provider, async (ref) => {
-                const rc = await ctx.credentials.resolve(credentialRef(ref));
-                return rc?.value;
-              });
-              // 余额必须实时：显式 no-store，禁止浏览器/代理缓存（4s 高频轮询依赖此保证）
+              const sessionId = url.searchParams.get('sessionId');
+              if (sessionId !== null && !validSessionId(sessionId)) {
+                sendJson(res, 400, { error: 'invalid sessionId' });
+                return;
+              }
+              const selection = selectionForSession(sessionId);
+              const result = await fetchProviderBalance(selection.provider);
+              // 余额必须实时：显式 no-store，禁止浏览器/代理缓存。
               const body = JSON.stringify(result);
               res.writeHead(200, {
                 'content-type': 'application/json; charset=utf-8',
@@ -441,7 +578,16 @@ export function apply(ctx: any): void {
 
           // 手动触发计数：/dsh-pet-7340/balance/trigger（no-cache，client 轻量轮询；/balance 命令写入）
           if (rest === 'balance/trigger') {
-            const body = JSON.stringify({ count: balanceTriggerCount });
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            const sessionId = url.searchParams.get('sessionId');
+            if (!validSessionId(sessionId)) {
+              sendJson(res, 400, { error: sessionId === null ? 'sessionId is required' : 'invalid sessionId' });
+              return;
+            }
+            const body = JSON.stringify({ count: balanceTriggerCounts.get(sessionId) ?? 0 });
             res.writeHead(200, {
               'content-type': 'application/json; charset=utf-8',
               'cache-control': 'no-cache, no-store', // 触发计数必须实时，禁止任何缓存层介入
@@ -451,11 +597,20 @@ export function apply(ctx: any): void {
             return;
           }
 
-          // 每轮对话余额消耗：/dsh-pet-7340/turn-spend（no-cache，client 轻量轮询）
-          // 返回最近一次结算的「本轮消耗」；count 递增供 client 检测新值（首轮 -1 仅记基线）
+          // 每轮对话消耗：必须带当前 sessionId，杜绝不同会话/页面互相串值。
           if (rest === 'turn-spend') {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            const sessionId = url.searchParams.get('sessionId');
+            if (!validSessionId(sessionId)) {
+              sendJson(res, 400, { error: sessionId === null ? 'sessionId is required' : 'invalid sessionId' });
+              return;
+            }
+            const spend = spendBySession.get(sessionId);
             const body = JSON.stringify(
-              lastTurnSpend ? { ok: true, count: lastTurnSpend.count, amount: lastTurnSpend.amount, currency: lastTurnSpend.currency, at: lastTurnSpend.at } : { ok: true, count: 0, amount: 0, currency: '', at: 0 },
+              spend ? { ok: true, ...spend } : { ok: true, count: 0, amount: 0, currency: '', at: 0, models: [] },
             );
             res.writeHead(200, {
               'content-type': 'application/json; charset=utf-8',
@@ -466,17 +621,31 @@ export function apply(ctx: any): void {
             return;
           }
 
-          // 诊断端点（仅调试用）：/dsh-pet-7340/turn-spend/debug
+          // 诊断端点：仅返回聚合状态和去标识事件，不暴露 sessionId。
           if (rest === 'turn-spend/debug') {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            const catalog = pricingManager.snapshot();
+            const models = new Set([...Object.keys(catalog), ...pricingOverrides.keys()]);
             sendJson(res, 200, {
-              turnSpendCount,
-              lastTurnSpend,
-              baselineCount: turnBaselines.size,
-              tokenUsageCount: turnTokenUsage.size,
-              pricing: getPricing(),
-              pricingSource: pricingOverride ? 'user-override' : 'official-fetch',
+              activeTurnCount: turns.size,
+              settledSessionCount: spendBySession.size,
+              pricing: Object.fromEntries(
+                [...models].map((model) => {
+                  const resolved = pricingFor(model);
+                  return [model, { pricing: resolved.pricing, source: resolved.source }];
+                }),
+              ),
               events: eventDiag,
             });
+            return;
+          }
+
+          // 下面均为只读静态资源路由。
+          if (req.method !== 'GET') {
+            sendJson(res, 405, { error: 'method not allowed' });
             return;
           }
 
@@ -488,7 +657,7 @@ export function apply(ctx: any): void {
               res.end('dsh-pet: config.jsonc not found');
               return;
             }
-            await sendFile(res, cfgFile, MIME['.jsonc'] ?? 'application/octet-stream');
+            await sendFile(res, cfgFile, MIME['.jsonc'] ?? 'application/octet-stream', 'no-cache');
             return;
           }
 
@@ -547,14 +716,23 @@ export function apply(ctx: any): void {
     'dsh-pet: /dsh-pet-7340 asset route',
   );
 
-  // /balance 斜杠命令：递增触发计数 → client 检测到变化后立即刷新余额并播动画（不进模型历史）
+  // /balance 斜杠命令：只递增接收该命令的会话计数。
   ctx.effect(
     () =>
       ctx.commands.register({
         name: 'balance',
         description: '手动触发桌宠余额动画（立即显示余额气泡）',
-        handler: () => {
-          balanceTriggerCount += 1;
+        handler: (invocation: { agent: { id: unknown } }) => {
+          const sessionId = String(invocation.agent.id);
+          if (!validSessionId(sessionId)) return { kind: 'error', text: '无法识别当前会话，未触发余额动画' };
+          const nextCount = (balanceTriggerCounts.get(sessionId) ?? 0) + 1;
+          balanceTriggerCounts.delete(sessionId);
+          balanceTriggerCounts.set(sessionId, nextCount);
+          while (balanceTriggerCounts.size > 200) {
+            const oldest = balanceTriggerCounts.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            balanceTriggerCounts.delete(oldest);
+          }
           return { kind: 'success', text: '已触发桌宠余额动画' };
         },
       }),

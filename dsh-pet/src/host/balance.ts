@@ -10,9 +10,9 @@
  */
 
 /** 抓取超时（ms） */
-const FETCH_TIMEOUT_MS = 20_000;
-/** 单次抓取失败后的重试次数（失败间隔 0.8s 线性退避） */
-const RETRIES = 3;
+const FETCH_TIMEOUT_MS = 10_000;
+/** Host 只重试一次；Client 不再叠加重试，避免慢网络下形成请求风暴。 */
+const RETRIES = 1;
 
 /** 一个 service provider 的余额查询定义 */
 export interface BalanceProvider {
@@ -24,7 +24,7 @@ export interface BalanceProvider {
   kind: 'opencode' | 'deepseek';
 }
 
-/** 已知可查询余额的服务商（只登记有公开 API 的；opencode/Zen 暂无官方余额 API，不在此表） */
+/** 已知可查询余额/用量的服务商 */
 export const BALANCE_PROVIDERS: BalanceProvider[] = [
   { ids: ['opencode-go'], ref: 'OPENCODE_GO_API_KEY', kind: 'opencode' },
   { ids: ['deepseek-official'], ref: 'DEEPSEEK_API_KEY', kind: 'deepseek' },
@@ -63,6 +63,7 @@ async function fetchOnce(url: string, key: string): Promise<Response> {
   return fetch(url, {
     headers: { Authorization: 'Bearer ' + key, 'User-Agent': 'dsh-pet-balance' },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    cache: 'no-store',
   });
 }
 

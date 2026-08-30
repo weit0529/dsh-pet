@@ -8,9 +8,9 @@
  *
  * 样式对齐官方设置页：max-width 720px、全走 --dsw-alias-* 语义 token（主题跟随）。
  */
-import { assertClientConfig, stripJsonc } from './config';
+import { applyUserOverrides, assertClientConfig, stripJsonc, type UserOverrides } from './config';
 import { NOTIFY_ICONS, reloadNotifications, requestNotificationPermission } from './notify';
-import type { Corner, Pet } from './types';
+import type { ClientConfig, Corner, Pet } from './types';
 import type { ChangeEvent, CSSProperties, Dispatch, FunctionComponent, SetStateAction, useEffect } from 'react';
 import type * as ReactNS from 'react';
 import type { jsx } from 'react/jsx-runtime';
@@ -22,10 +22,14 @@ export const petBridge: {
   current: Pet[];
   sync: (pets: Pet[]) => void;
   template: Pet | undefined;
+  currentConfig: ClientConfig | undefined;
+  syncConfig: (config: ClientConfig) => void;
 } = {
   current: [],
   sync: () => {},
   template: undefined,
+  currentConfig: undefined,
+  syncConfig: () => {},
 };
 
 /** 字典命名空间 */
@@ -55,8 +59,8 @@ export const zh = {
   marginY: '垂直偏移',
   save: '保存',
   reset: '恢复默认',
-  confirmReset: '确定恢复默认吗？将删除整个用户配置（含自定义的动画池与播放权重）。',
-  resetHint: '「重置」会删除整个用户配置（含自定义的动画池与播放权重），不只是宠物列表。',
+  confirmReset: '确定恢复默认吗？将删除整个用户配置（含桌宠、通知、计费与动画设置）。',
+  resetHint: '「重置」会删除整个用户配置（含桌宠、通知、计费与动画设置），不只是宠物列表。',
   configMeta: '高级配置（文件）',
   configMetaHint: '用户配置可覆盖宠物列表 / 动画池 / 播放权重，修改后刷新或重启生效；默认配置为完整参考。',
   defaultConfig: '默认配置（只读，完整参考）',
@@ -64,7 +68,7 @@ export const zh = {
   animationDir: '动画素材目录（可自定义/扩充动画）',
   saved: '已保存，桌宠即时生效。',
   loadError: '加载配置失败',
-  invalid: '请检查输入：大小需为正数，边距可为任意数字。',
+  invalid: '请检查输入：大小需为 120–2000px，边距需为有效数字。',
   busy: '保存中…',
   notifyToggle: '系统通知',
   notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
@@ -101,9 +105,8 @@ export const en = {
   marginY: 'Vertical offset',
   save: 'Save',
   reset: 'Reset to default',
-  confirmReset: 'Reset to default? This deletes the whole user config (including custom animation pools & weights).',
-  resetHint:
-    '"Reset" deletes the whole user config (including custom animation pools & weights), not just the pet list.',
+  confirmReset: 'Reset to default? This deletes all pet, notification, pricing, and animation overrides.',
+  resetHint: '"Reset" deletes all pet, notification, pricing, and animation overrides, not just the pet list.',
   configMeta: 'Advanced (files)',
   configMetaHint:
     'User config may override pets / animation pools / weights — refresh or restart to apply. The default config is the complete reference.',
@@ -112,7 +115,7 @@ export const en = {
   animationDir: 'Animation assets dir (add/customize animations here)',
   saved: 'Saved — the pets updated instantly.',
   loadError: 'Failed to load config',
-  invalid: 'Check your input: size must be positive; margins can be any number.',
+  invalid: 'Check your input: size must be 120–2000px and margins must be finite numbers.',
   busy: 'Saving…',
   notifyToggle: 'System notifications',
   notifyToggleHint:
@@ -154,6 +157,18 @@ export function makePetConfigSection(rt: {
 
   const CORNERS: Corner[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
   const cornerLabel = (c: Corner): string => t('corner.' + c);
+  const permissionFailureText = (r: Awaited<ReturnType<typeof requestNotificationPermission>>): string => {
+    if (r.ok) return '';
+    const reason =
+      r.reason === 'unsupported'
+        ? t('notifyDenyUnsupported')
+        : r.reason === 'denied'
+          ? t('notifyDenyBlocked')
+          : r.reason === 'rejected'
+            ? t('notifyDenyRejected')
+            : t('notifyDenyError') + (r.message ? '：' + r.message : '');
+    return reason + (r.reason === 'unsupported' ? '' : ' ' + t('notifyGuide'));
+  };
 
   const inputStyle = {
     boxSizing: 'border-box',
@@ -194,19 +209,31 @@ export function makePetConfigSection(rt: {
     }, []);
 
     // 系统通知总开关（全局：读写用户级配置 main-config.json 的 notificationsEnabled；即时生效）
-    const [notifyEnabled, setNotifyEnabled] = useState(true);
+    const [notifyEnabled, setNotifyEnabled] = useState(petBridge.currentConfig?.notificationsEnabled ?? false);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     useEffect(() => {
       let alive = true;
-      fetch('/dsh-pet-7340/config')
-        .then((r) => (r.ok && r.status !== 204 ? r.json() : null))
-        .then((d) => {
-          if (alive && d && typeof d.notificationsEnabled === 'boolean') setNotifyEnabled(d.notificationsEnabled);
-        })
-        .catch(() => {
-          /* 无用户层时保持默认（true） */
-        });
+      (async () => {
+        try {
+          const defaultResponse = await fetch('/dsh-pet-7340/config.jsonc');
+          if (!defaultResponse.ok) throw new Error('config.jsonc HTTP ' + defaultResponse.status);
+          const defaults = assertClientConfig(JSON.parse(stripJsonc(await defaultResponse.text())));
+          let user: UserOverrides = {};
+          const userResponse = await fetch('/dsh-pet-7340/config');
+          if (userResponse.ok && userResponse.status !== 204) user = await userResponse.json();
+          const merged = assertClientConfig(applyUserOverrides(defaults, user));
+          if (!alive) return;
+          setNotifyEnabled(merged.notificationsEnabled);
+          if (!petBridge.template) petBridge.template = defaults.pets[0];
+          const nextPets = merged.pets.map((p) => ({ ...p, position: { ...p.position } }));
+          setPets(nextPets);
+          setSelId(nextPets[0]?.id ?? '');
+          petBridge.currentConfig = merged;
+        } catch (error) {
+          console.error('[dsh-pet] 设置页配置加载失败', error);
+        }
+      })();
       return () => {
         alive = false;
       };
@@ -217,17 +244,25 @@ export function makePetConfigSection(rt: {
       setMsg({ kind: '', text: '' });
       try {
         // 开启时先借用户手势申请系统通知权限（无手势的自动申请可能被浏览器静默压制）
-        if (v) await requestNotificationPermission();
-        // 与保存同构：整包写用户级配置（pets + 开关），避免开关写入被 sanitize 拒绝
+        if (v) {
+          const permission = await requestNotificationPermission();
+          if (!permission.ok) {
+            setPermMsg({ kind: 'err', text: permissionFailureText(permission) });
+            return;
+          }
+        }
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ pets: pets, notificationsEnabled: v }),
+          body: JSON.stringify({ notificationsEnabled: v }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         setNotifyEnabled(v);
-        petBridge.current = pets;
-        petBridge.sync(pets);
+        if (petBridge.currentConfig) {
+          const nextConfig = { ...petBridge.currentConfig, notificationsEnabled: v };
+          petBridge.currentConfig = nextConfig;
+          petBridge.syncConfig(nextConfig);
+        }
         void reloadNotifications(); // 引擎重读开关：即时生效，无需刷新页面
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
@@ -241,16 +276,7 @@ export function makePetConfigSection(rt: {
       setPermMsg({ kind: '', text: '' });
       const r = await requestNotificationPermission();
       if (!r.ok) {
-        // 红字：失败理由 + 引导（unsupported 无引导，改环境才有意义）
-        const reason =
-          r.reason === 'unsupported'
-            ? t('notifyDenyUnsupported')
-            : r.reason === 'denied'
-              ? t('notifyDenyBlocked')
-              : r.reason === 'rejected'
-                ? t('notifyDenyRejected')
-                : t('notifyDenyError') + (r.message ? '：' + r.message : '');
-        setPermMsg({ kind: 'err', text: reason + (r.reason === 'unsupported' ? '' : ' ' + t('notifyGuide')) });
+        setPermMsg({ kind: 'err', text: permissionFailureText(r) });
         return;
       }
       try {
@@ -279,7 +305,8 @@ export function makePetConfigSection(rt: {
       for (const p of pets) {
         if (
           !Number.isFinite(p.size) ||
-          p.size <= 0 ||
+          p.size < 120 ||
+          p.size > 2000 ||
           !Number.isFinite(p.position.marginX) ||
           !Number.isFinite(p.position.marginY)
         ) {
@@ -296,27 +323,19 @@ export function makePetConfigSection(rt: {
       setBusy(true);
       setMsg({ kind: '', text: '' });
       try {
-        // 保留用户级配置（main-config.json）里手写的 notificationsEnabled，避免保存时被整体覆盖丢失
-        let notificationsEnabled: boolean | undefined;
-        try {
-          const prev = await fetch('/dsh-pet-7340/config');
-          if (prev.ok && prev.status !== 204) {
-            const pj = await prev.json().catch(() => null);
-            if (pj && typeof pj.notificationsEnabled === 'boolean') notificationsEnabled = pj.notificationsEnabled;
-          }
-        } catch {
-          /* 无用户层时忽略 */
-        }
-        const body: Record<string, unknown> = { pets: pets };
-        if (notificationsEnabled !== undefined) body.notificationsEnabled = notificationsEnabled;
         const res = await fetch('/dsh-pet-7340/config', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ pets }),
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         petBridge.current = pets;
         petBridge.sync(pets);
+        if (petBridge.currentConfig) {
+          const nextConfig = { ...petBridge.currentConfig, pets };
+          petBridge.currentConfig = nextConfig;
+          petBridge.syncConfig(nextConfig);
+        }
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -331,13 +350,19 @@ export function makePetConfigSection(rt: {
       setBusy(true);
       setMsg({ kind: '', text: '' });
       try {
-        await fetch('/dsh-pet-7340/config', { method: 'DELETE' });
+        const resetResponse = await fetch('/dsh-pet-7340/config', { method: 'DELETE' });
+        if (!resetResponse.ok) throw new Error('DELETE config HTTP ' + resetResponse.status);
         const defRes = await fetch('/dsh-pet-7340/config.jsonc');
-        const defs = assertClientConfig(JSON.parse(stripJsonc(await defRes.text()))).pets;
+        if (!defRes.ok) throw new Error('config.jsonc HTTP ' + defRes.status);
+        const defaultConfig = assertClientConfig(JSON.parse(stripJsonc(await defRes.text())));
+        const defs = defaultConfig.pets;
         setPets(defs.map((p) => ({ ...p, position: { ...p.position } })));
         setSelId(defs[0]?.id ?? '');
+        setNotifyEnabled(defaultConfig.notificationsEnabled);
         petBridge.current = defs;
-        petBridge.sync(defs);
+        petBridge.currentConfig = defaultConfig;
+        petBridge.syncConfig(defaultConfig);
+        void reloadNotifications();
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -376,6 +401,7 @@ export function makePetConfigSection(rt: {
         type: 'number',
         step: key === 'size' ? '10' : '1',
         min: key === 'size' ? '120' : '',
+        max: key === 'size' ? '2000' : '',
         value: String(value),
         disabled: busy,
         onChange: (e: ChangeEvent<HTMLInputElement>) => setter(Number(e.target.value)),

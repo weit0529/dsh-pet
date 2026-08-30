@@ -17,8 +17,13 @@ import type { jsx } from 'react/jsx-runtime';
 /** 运行时配置（PetMulti 加载后赋值；PetCard 只读） */
 let config: ClientConfig = EMPTY_CONF;
 
+interface SessionListSource {
+  getSnapshot(): { current?: unknown };
+  subscribe(fn: () => void): () => void;
+}
+
 /** 播放动画扩展名：发布期注入，不做运行时判断。
- *  源码里是占位符 __PET_EXT__；publish 的 prepack 链用 scripts/inject-ext.js
+ *  源码里是占位符 __PET_EXT__；发布前由 scripts/prepare.js
  *  在 bundle 之后把构建产物替换为 .webm / .mov，本地开发同样用它切换。 */
 const THUMB_EXT: string = '__PET_EXT__';
 
@@ -66,7 +71,7 @@ export function makePetUI(rt: {
   useState: <T>(init: T) => [T, Dispatch<SetStateAction<T>>];
   useEffect: typeof useEffect;
   useRef: typeof useRef;
-}): () => ReactNode {
+}): (props: { sessionList?: SessionListSource }) => ReactNode {
   const { h, useState, useEffect, useRef } = rt;
   injectCss();
 
@@ -86,16 +91,20 @@ export function makePetUI(rt: {
   function PetCard({
     cfg,
     balance,
+    balanceSessionId,
     balanceTick,
     spend,
     spendTick,
+    showSpend,
     onRefreshBalance,
   }: {
     cfg: Pet;
     balance: BalanceState | null;
+    balanceSessionId?: string;
     balanceTick: number;
     spend: TurnSpend | null;
     spendTick: number;
+    showSpend: boolean;
     onRefreshBalance: () => void;
   }) {
     // ---- 尺寸（由配置传入；容器/设置页更新后即时跟随）----
@@ -196,7 +205,7 @@ export function makePetUI(rt: {
     // 持续 SPEND_DURATION_MS（5s）自动消失；鼠标移动到桌宠上时也会提前收起（见 hover 处理）
     const prevSpendTickRef = useRef(0);
     useEffect(() => {
-      if (!cfg.balanceEnabled) return;
+      if (!cfg.balanceEnabled || !showSpend) return;
       if (spendTick === 0 || spendTick === prevSpendTickRef.current) return;
       prevSpendTickRef.current = spendTick;
       if (!spend || spend.amount <= 0) return;
@@ -215,20 +224,29 @@ export function makePetUI(rt: {
       spendTimerRef.current = window.setTimeout(() => setSpendOn(false), SPEND_DURATION_MS);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [spendTick]);
-    // 余额事件：容器拉取成功后递增 balanceTick → 按档位播放事件动画 + 弹气泡
-    // （仅启用余额功能的宠物触发：未启用则该宠物完全不播余额动画、不显示气泡；
-    //   无效/不支持按设计不触发动画，错误由容器侧显式上报）
-    // 高频刷新（4s）下避免动画轰炸：仅在「档位变化」时才触发动画+气泡，
-    // 数据本身每次刷新都更新（悬停气泡即时显示最新余额）。
+    // 余额事件：成功结果按档位播放动画；不可用结果只弹错误气泡，不伪造数字。
+    // 仅在档位变化时触发成功动画，周期刷新只更新悬停气泡的数据。
     const prevTickRef = useRef(0);
     const prevIdxRef = useRef(-1);
+    useEffect(() => {
+      prevIdxRef.current = -1;
+      prevTickRef.current = balanceTick;
+      setBubbleOn(false);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [balanceSessionId]);
     useEffect(() => {
       if (!cfg.balanceEnabled) return; // 未启用余额功能 -> 该宠物对余额事件完全免疫
       if (balanceTick === 0 || balanceTick === prevTickRef.current) return;
       prevTickRef.current = balanceTick;
-      if (!balance || !balance.ok) return;
-      const p = balancePercent(balance);
-      if (p === undefined) return; // 当前数据源没有百分比语义（如 DeepSeek 余额），不触发档位动画
+      if (!balance) return;
+      if (!balance.ok) {
+        setBubbleOn(true);
+        if (bubbleTimerRef.current !== null) window.clearTimeout(bubbleTimerRef.current);
+        bubbleTimerRef.current = window.setTimeout(() => setBubbleOn(false), BUBBLE_DURATION_MS);
+        return;
+      }
+      const p = balancePercent(balance, config.deepseekFullBalanceCny);
+      if (p === undefined) return;
       const pool = config.animations.events?.balance;
       if (!pool || pool.length === 0) {
         console.error('[dsh-pet] 配置缺少 animations.events.balance，无法播放余额事件动画');
@@ -583,11 +601,11 @@ export function makePetUI(rt: {
       ),
       children: [
         // 余额气泡（仅启用余额功能的宠物渲染）：事件触发（bubbleOn）或悬停（hoverOn）时显示
-        balance && balance.ok && cfg.balanceEnabled
-          ? h(BalanceBubble, { state: balance, on: bubbleOn || hoverOn })
-          : null,
+        balance && cfg.balanceEnabled ? h(BalanceBubble, { state: balance, on: bubbleOn || hoverOn }) : null,
         // 每轮对话消耗气泡（独立新样式）：turn-spend 结算后弹出，5s 或鼠标移到桌宠上时收起
-        cfg.balanceEnabled && spendOn && spend ? h(SpendBubble, { amount: spend.amount, currency: spend.currency, on: true }) : null,
+        cfg.balanceEnabled && showSpend && spendOn && spend
+          ? h(SpendBubble, { amount: spend.amount, currency: spend.currency, on: true })
+          : null,
         h('div', {
           ref: stageRef,
           className: 'dsh-pet-stage',
@@ -603,12 +621,31 @@ export function makePetUI(rt: {
   }
 
   /** 多开容器：拉取配置 → 合并默认+用户层 pets → 渲染多个 PetCard */
-  function PetMulti() {
+  function PetMulti({ sessionList }: { sessionList?: SessionListSource }) {
     const [pets, setPets] = useState<Pet[]>([]);
     const [ready, setReady] = useState(false);
     // 余额状态（容器统一拉取，PetCard 共享；balanceTick 每次成功拉取递增，驱动事件动画）
     const [balance, setBalance] = useState<BalanceState | null>(null);
     const [balanceTick, setBalanceTick] = useState(0);
+    const initialSessionId = sessionList?.getSnapshot().current;
+    const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(
+      typeof initialSessionId === 'string' && initialSessionId ? initialSessionId : undefined,
+    );
+    const currentSessionRef = useRef<string | undefined>(currentSessionId);
+    currentSessionRef.current = currentSessionId;
+
+    useEffect(() => {
+      if (!sessionList) {
+        setCurrentSessionId(undefined);
+        return;
+      }
+      const syncCurrentSession = () => {
+        const value = sessionList.getSnapshot().current;
+        setCurrentSessionId(typeof value === 'string' && value ? value : undefined);
+      };
+      syncCurrentSession();
+      return sessionList.subscribe(syncCurrentSession);
+    }, [sessionList]);
 
     useEffect(() => {
       let alive = true;
@@ -632,10 +669,19 @@ export function makePetUI(rt: {
           const merged = config.pets;
           if (!alive) return;
           petBridge.current = merged;
+          petBridge.currentConfig = config;
           petBridge.template = defaults.length ? defaults[0] : undefined;
           petBridge.sync = (list: Pet[]) => {
             setPets(list);
             petBridge.current = list;
+            config = { ...config, pets: list };
+            petBridge.currentConfig = config;
+          };
+          petBridge.syncConfig = (next: ClientConfig) => {
+            config = next;
+            petBridge.currentConfig = next;
+            petBridge.current = next.pets;
+            setPets(next.pets);
           };
           setPets(merged);
           setReady(true);
@@ -646,6 +692,7 @@ export function makePetUI(rt: {
       return () => {
         alive = false;
         petBridge.sync = () => {};
+        petBridge.syncConfig = () => {};
       };
     }, []);
 
@@ -655,20 +702,39 @@ export function makePetUI(rt: {
     // 余额即时刷新（周期轮询 + 点击桌宠共用）：拉取最新余额 → 更新 state；
     // 成功递增 balanceTick（档位变化才触发动画，见 PetCard 逻辑）；失败显式报错不伪造数字。
     // 用 useRef 持有最新实现，避免定时器/回调捕获过期闭包
-    const refreshBalanceRef = useRef(async () => {});
-    refreshBalanceRef.current = async () => {
-      try {
-        const state = await fetchBalanceState();
-        setBalance(state);
-        if (state.ok) setBalanceTick((t) => t + 1);
-        else if (state.reason === 'unsupported') {
-          /* 无匹配服务商：按设计不显示、不播动画 */
-        } else {
-          console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
+    const refreshInFlightRef = useRef(new Map<string, Promise<void>>());
+    const refreshBalanceRef = useRef<() => Promise<void>>(async () => {});
+    refreshBalanceRef.current = () => {
+      const sessionId = currentSessionId;
+      if (!sessionId) return Promise.resolve();
+      const existing = refreshInFlightRef.current.get(sessionId);
+      if (existing) return existing;
+      const request = (async () => {
+        try {
+          const state = await fetchBalanceState(sessionId);
+          if (currentSessionRef.current !== sessionId) return;
+          setBalance(state);
+          setBalanceTick((t) => t + 1);
+          if (!state.ok && state.reason !== 'unsupported') {
+            console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
+          }
+        } catch (e) {
+          if (currentSessionRef.current === sessionId) {
+            setBalance({
+              provider: 'unknown',
+              ok: false,
+              reason: 'fetch-error',
+              message: e instanceof Error ? e.message : String(e),
+            });
+            setBalanceTick((t) => t + 1);
+          }
+          console.error('[dsh-pet] 余额拉取异常', e);
         }
-      } catch (e) {
-        console.error('[dsh-pet] 余额拉取异常', e);
-      }
+      })().finally(() => {
+        if (refreshInFlightRef.current.get(sessionId) === request) refreshInFlightRef.current.delete(sessionId);
+      });
+      refreshInFlightRef.current.set(sessionId, request);
+      return request;
     };
     const onRefreshBalance = () => void refreshBalanceRef.current();
 
@@ -677,12 +743,18 @@ export function makePetUI(rt: {
     const [spend, setSpend] = useState<TurnSpend | null>(null);
     const [spendTick, setSpendTick] = useState(0);
     useEffect(() => {
-      if (!ready || !anyBalanceEnabled) return;
+      setBalance(null);
+      setSpend(null);
+    }, [currentSessionId]);
+
+    useEffect(() => {
+      if (!ready || !anyBalanceEnabled || !currentSessionId) return;
       let alive = true;
       let prev = -1;
       const poll = async () => {
         try {
-          const r = await fetch('/dsh-pet-7340/turn-spend', { cache: 'no-store' });
+          const query = new URLSearchParams({ sessionId: currentSessionId });
+          const r = await fetch('/dsh-pet-7340/turn-spend?' + query, { cache: 'no-store' });
           if (!alive || !r.ok) return;
           const data = await r.json().catch(() => null);
           const count = data && typeof data.count === 'number' ? data.count : -1;
@@ -701,35 +773,46 @@ export function makePetUI(rt: {
           /* 轻量轮询失败静默：下一周期再试 */
         }
       };
-      void poll();
-      const timer = window.setInterval(() => void poll(), SPEND_POLL_MS);
+      let timer: number | undefined;
+      const loop = async () => {
+        await poll();
+        if (alive) timer = window.setTimeout(() => void loop(), SPEND_POLL_MS);
+      };
+      void loop();
       return () => {
         alive = false;
-        window.clearInterval(timer);
+        if (timer !== undefined) window.clearTimeout(timer);
       };
-    }, [ready, anyBalanceEnabled]);
+    }, [ready, anyBalanceEnabled, currentSessionId]);
 
     // 余额轮询：配置就绪（ready）且至少一只宠物启用余额后启动拉取一次，之后按 eventsRefreshSec.balance（秒）周期刷新；
     // 与点击刷新共用 refreshBalanceRef（同一刷新路径，不会重复叠加）
     useEffect(() => {
-      if (!ready || !anyBalanceEnabled) return; // 未就绪 / 全宠物未启用余额：不启动轮询
-      void refreshBalanceRef.current();
-      const intervalMs = Math.max(1000, (config.eventsRefreshSec?.balance ?? 1800) * 1000);
-      const timer = window.setInterval(() => void refreshBalanceRef.current(), intervalMs);
-      return () => {
-        window.clearInterval(timer);
+      if (!ready || !anyBalanceEnabled || !currentSessionId) return;
+      let alive = true;
+      const intervalMs = Math.max(1000, (config.eventsRefreshSec?.balance ?? 180) * 1000);
+      let timer: number | undefined;
+      const loop = async () => {
+        await refreshBalanceRef.current();
+        if (alive) timer = window.setTimeout(() => void loop(), intervalMs);
       };
-    }, [ready, anyBalanceEnabled]);
+      void loop();
+      return () => {
+        alive = false;
+        if (timer !== undefined) window.clearTimeout(timer);
+      };
+    }, [ready, anyBalanceEnabled, currentSessionId]);
 
     // 手动 /balance 触发：1s 轻量轮询触发计数（host 端点响应头已禁止缓存），
     // 计数变化且余额启用时立即刷新余额并递增 balanceTick（与周期轮询同一触发路径）
     useEffect(() => {
-      if (!ready || !anyBalanceEnabled) return;
+      if (!ready || !anyBalanceEnabled || !currentSessionId) return;
       let alive = true;
       let prev = -1;
       const poll = async () => {
         try {
-          const r = await fetch('/dsh-pet-7340/balance/trigger');
+          const query = new URLSearchParams({ sessionId: currentSessionId });
+          const r = await fetch('/dsh-pet-7340/balance/trigger?' + query, { cache: 'no-store' });
           if (!alive || !r.ok) return;
           const data = await r.json().catch(() => null);
           const count = data && typeof data.count === 'number' ? data.count : -1;
@@ -740,30 +823,37 @@ export function makePetUI(rt: {
           }
           if (count === prev) return;
           prev = count;
-          const state = await fetchBalanceState();
-          if (!alive) return;
-          setBalance(state);
-          if (state.ok) setBalanceTick((t) => t + 1);
-          else {
-            console.error(
-              '[dsh-pet] 手动触发余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''),
-            );
-          }
+          await refreshBalanceRef.current();
         } catch {
           /* 轻量轮询失败静默：下一周期再试 */
         }
       };
-      void poll();
-      const timer = window.setInterval(() => void poll(), 1000);
+      let timer: number | undefined;
+      const loop = async () => {
+        await poll();
+        if (alive) timer = window.setTimeout(() => void loop(), 1000);
+      };
+      void loop();
       return () => {
         alive = false;
-        window.clearInterval(timer);
+        if (timer !== undefined) window.clearTimeout(timer);
       };
-    }, [ready, anyBalanceEnabled]);
+    }, [ready, anyBalanceEnabled, currentSessionId]);
 
+    const spendPetId = pets.find((p) => p.balanceEnabled)?.id;
     return ready
       ? pets.map((p) =>
-          h(PetCard, { key: p.id, cfg: p, balance, balanceTick, spend, spendTick, onRefreshBalance }),
+          h(PetCard, {
+            key: p.id,
+            cfg: p,
+            balance,
+            balanceSessionId: currentSessionId,
+            balanceTick,
+            spend,
+            spendTick,
+            showSpend: p.id === spendPetId,
+            onRefreshBalance,
+          }),
         )
       : null;
   }

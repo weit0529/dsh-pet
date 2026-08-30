@@ -23,7 +23,7 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     const PetMulti = makePetUI({ h, useState, useEffect, useRef });
 
     const name = 'pet';
-    const inject = ['slots', 'locale', 'connection'];
+    const inject = ['slots', 'locale', 'connection', 'sessions'];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- DSH 注入的 ctx（locale/slots/webServer 等 service 无静态类型）
     function apply(ctx: any) {
       // 本地化字典（设置页文案）
@@ -44,7 +44,9 @@ export function makeFactory(): (require: (mod: string) => any) => any {
 
       // 宠物 overlay（多开：容器渲染多个 PetCard）
       ctx.slots.inject('shell.overlay', function* () {
-        yield ctx.slots.register({ name: 'shell.overlay', id: 'pet', order: 1000 }, () => h(PetMulti, {}));
+        yield ctx.slots.register({ name: 'shell.overlay', id: 'pet', order: 1000 }, () =>
+          h(PetMulti, { sessionList: ctx.sessions?.list }),
+        );
       });
 
       // 设置页：「桌宠配置」（大小/位置，保存即时生效）

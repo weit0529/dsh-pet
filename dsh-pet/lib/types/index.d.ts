@@ -8,7 +8,7 @@
  *   在 import 本包时获得智能提示和类型检查。纯类型文件，不影响运行时。
  *
  * 【对应实现】
- *   lib/index.js —— 注册 /dsh-pet-7340/ 前缀路由，向浏览器提供动画 WebM 文件。
+ *   lib/index.js —— 注册资源、配置、余额、会话计费与诊断路由，并注册 /balance 命令。
  *
  * ============================================================================
  * @module dsh-pet
@@ -18,12 +18,11 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
 
 /** Cordis 插件名（loader 诊断用），与 lib/index.js 的 name 一致 */
 export declare const name = 'pet';
-/** 需要注入的服务列表（webServer），与 lib/index.js 的 inject 一致 */
+/** 需要注入 webServer / credentials / defaultModel / commands / sessions / homePaths 服务 */
 export declare const inject: string[];
 
 /**
- * 宿主插件主体：注册 /dsh-pet-7340 前缀路由。
- * @param ctx - 插件上下文；ctx.webServer 是 Web 服务器服务
+ * 宿主插件主体：注册 /dsh-pet-7340 前缀路由、会话事件计费和 /balance 命令。
  */
 export declare function apply(ctx: Context): void;
 

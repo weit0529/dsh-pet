@@ -52,29 +52,19 @@ export interface BalanceUnavailable {
 
 export type BalanceState = BalanceView | BalanceUnavailable;
 
-const TIMEOUT_MS = 20000;
-const RETRIES = 2;
+const TIMEOUT_MS = 25_000;
 
-/** 带超时 + 重试的 GET（host 已内置重试，这里再兜底网络抖动）；
- *  强制 no-store：余额必须实时，禁止浏览器/代理缓存层介入 */
-async function getWithRetry(url: string): Promise<Response> {
-  let last: unknown;
-  for (let i = 0; i <= RETRIES; i++) {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), cache: 'no-store' });
-      if (res.ok) return res;
-      last = new Error('HTTP ' + res.status);
-    } catch (e) {
-      last = e;
-    }
-    if (i < RETRIES) await new Promise((r) => setTimeout(r, 600));
-  }
-  throw last instanceof Error ? last : new Error(String(last));
+/** Host 已负责重试和单飞；Client 只发一次，避免双层重试放大请求。 */
+async function getBalance(url: string): Promise<Response> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), cache: 'no-store' });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response;
 }
 
 /** 拉取当前状态的余额；网络/解析失败显式抛错（上层决定报错方式，绝不静默 0） */
-export async function fetchBalanceState(): Promise<BalanceState> {
-  const res = await getWithRetry('/dsh-pet-7340/balance');
+export async function fetchBalanceState(sessionId?: string): Promise<BalanceState> {
+  const query = sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : '';
+  const res = await getBalance('/dsh-pet-7340/balance' + query);
   const raw: RawBalanceResult = await res.json().catch(() => null);
   if (!raw || typeof raw !== 'object') throw new Error('dsh-pet: /dsh-pet-7340/balance 响应非法');
 
@@ -123,22 +113,19 @@ export async function fetchBalanceState(): Promise<BalanceState> {
   throw new Error('dsh-pet: /dsh-pet-7340/balance kind 非法');
 }
 
-/** DeepSeek 满额基准（¥）：余额 ≥ 该值视为 100%（未消耗），余额按比例折算为已用百分比 */
-const DEEPSEEK_FULL_BALANCE_CNY = 20;
-
 /**
  * 事件档位百分比（已用百分比语义：0 = 未消耗，100 = 耗尽）：
  * - opencode：取三窗口最大（风险最高者为准）
- * - deepseek：余额按 DEEPSEEK_FULL_BALANCE_CNY（¥20 = 100%）折算为已用百分比
- *   （余额 20 元 → 0%，10 元 → 50%，0 元 → 100%）
+ * - deepseek：余额按配置 deepseekFullBalanceCny 折算为已用百分比
  */
-export function balancePercent(v: BalanceView): number | undefined {
+export function balancePercent(v: BalanceView, deepseekFullBalanceCny: number): number | undefined {
   if (v.kind === 'opencode') return Math.max(v.rolling ?? 0, v.weekly ?? 0, v.monthly ?? 0);
   if (v.kind === 'deepseek') {
     const total = Number(v.total);
     if (!Number.isFinite(total)) return undefined; // 金额非法（非数字）：不触发（上层校验已兜底，此处双保险）
     // 负数 = 透支，与 0 等价按「已用完」折算：-0.02 → 剩余 0 → 已用 100%（播「分文不剩」档）
-    const remaining = (Math.max(0, total) / DEEPSEEK_FULL_BALANCE_CNY) * 100; // 剩余百分比 0~100+
+    if (!Number.isFinite(deepseekFullBalanceCny) || deepseekFullBalanceCny <= 0) return undefined;
+    const remaining = (Math.max(0, total) / deepseekFullBalanceCny) * 100; // 剩余百分比 0~100+
     return Math.max(0, Math.min(100, 100 - remaining)); // 折算为已用百分比
   }
   return undefined;

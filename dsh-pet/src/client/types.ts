@@ -64,4 +64,6 @@ export interface ClientConfig {
   animationWeights: Weights;
   /** 事件刷新周期（秒）：事件名 → 间隔；balance = 余额数据刷新 + 动画触发间隔 */
   eventsRefreshSec: Record<string, number>;
+  /** DeepSeek 余额动画的“满额”参考值（CNY），可由用户配置覆盖，不再写死在代码里。 */
+  deepseekFullBalanceCny: number;
 }

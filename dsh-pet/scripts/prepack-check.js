@@ -64,14 +64,22 @@ if (originals.length > 0)
   fail(`original masters must not ship in npm package: ${originals.join(', ')} (move them to GitHub Releases)`);
 else ok('no original masters in assets/');
 
-// ---- 4. client.js 必须是官方 bundle 形态（含插件三件套导出） ----
-const client = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
-client.includes('__ModuleLoader__.load')
-  ? ok('client bundle shell OK')
-  : fail('client.js missing __ModuleLoader__.load');
-const exportsPlugin =
-  /exports\.(apply|inject|name)/.test(client) || /module\.exports\s*=\s*\{[^}]*apply[^}]*inject[^}]*name/.test(client);
-exportsPlugin ? ok('client exports apply/inject/name') : fail('client.js missing apply/inject/name exports');
+// ---- 4. client.js 必须是官方 bundle 形态（含插件三件套导出），且扩展名已经注入 ----
+const clientFile = join(ROOT, 'lib', 'client.js');
+let client = '';
+if (existsSync(clientFile)) {
+  client = readFileSync(clientFile, 'utf8');
+  client.includes('__ModuleLoader__.load')
+    ? ok('client bundle shell OK')
+    : fail('client.js missing __ModuleLoader__.load');
+  const exportsPlugin =
+    /exports\.(apply|inject|name)/.test(client) ||
+    /module\.exports\s*=\s*\{[^}]*apply[^}]*inject[^}]*name/.test(client);
+  exportsPlugin ? ok('client exports apply/inject/name') : fail('client.js missing apply/inject/name exports');
+  client.includes('__PET_EXT__')
+    ? fail('client.js still contains __PET_EXT__; run npm run prepare:webm or prepare:mov')
+    : ok('animation extension injected');
+}
 
 // ---- 5. package.json 必须声明 bundle + client ----
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
@@ -79,6 +87,12 @@ if (pkg.dsh?.bundle?.patch) ok('dsh.bundle.patch declared');
 else fail('package.json missing dsh.bundle.patch');
 if (pkg.dsh?.client?.platform === 'web') ok('dsh.client.web declared');
 else fail('package.json missing dsh.client platform web');
+const selectedAssetDirs = pkg.files?.filter((entry) => /^assets\/(webm|mov)$/.test(entry)) ?? [];
+const selectedAssetDir = selectedAssetDirs.length === 1 ? selectedAssetDirs[0] : undefined;
+const selectedExt = selectedAssetDir?.split('/')[1];
+if (!selectedExt) fail('package.json files must select exactly one animation format directory');
+else if (!client.includes(`.${selectedExt}`)) fail(`client.js does not reference selected .${selectedExt} assets`);
+else ok(`client extension matches ${selectedAssetDir}`);
 
 // ---- 6. 包总大小估算（排除 node_modules/.git/脚本/素材源目录/README预览GIF） ----
 let total = 0;

@@ -151,6 +151,10 @@ async function runMuxLoop(
 ): Promise<void> {
   // 重连时服务器会重放仍 pending 的 approval/question 帧（rpcId 保持不变）——按 rpcId 去重
   const seen = new Set<unknown>();
+  const remember = (rpcId: unknown) => {
+    seen.add(rpcId);
+    if (seen.size > 500) seen.delete(seen.values().next().value);
+  };
   for await (const env of api.events.mux({}, signal)) {
     const frame = env?.payload;
     if (!frame) continue;
@@ -168,7 +172,7 @@ async function runMuxLoop(
       }
       case 'approval/requested': {
         if (seen.has(env.rpcId)) break;
-        seen.add(env.rpcId);
+        remember(env.rpcId);
         const toolName = String(frame.toolName ?? '');
         const reason = typeof frame.reason === 'string' && frame.reason ? (frame.reason as string) : '';
         toast(
@@ -180,7 +184,7 @@ async function runMuxLoop(
       }
       case 'question/requested': {
         if (seen.has(env.rpcId)) break;
-        seen.add(env.rpcId);
+        remember(env.rpcId);
         const q =
           (Array.isArray(frame.questions) && (frame.questions as Array<{ question?: string }>)[0]?.question) || '';
         toast('模型在等你回答', q, ICON.question);
@@ -209,7 +213,7 @@ async function runHostLoop(
 
 /**
  * 启动系统通知。引擎常驻（开关在触发时按实时值判断，不用重启）；
- * 总开关开启且权限未决定时兜底申请一次权限，并行消费 mux + host 两条流。
+ * 权限只在设置页的用户点击中申请；此处并行消费 mux + host 两条流。
  * 流关闭/出错即整体静默退出：DSH 连接层自身负责重连，页面刷新或下个 socket 代际会重新启动。
  */
 export async function startNotify(
@@ -222,9 +226,6 @@ export async function startNotify(
   signal: AbortSignal,
 ): Promise<void> {
   notifyEnabled = await readNotificationsEnabled();
-  if (typeof Notification !== 'undefined' && notifyEnabled && Notification.permission === 'default') {
-    void requestNotificationPermission(); // 兜底申请（无手势时浏览器可能压制；真正的申请在设置页开关/按钮点击处）
-  }
   const disposeFocus = initFocusTracking();
   try {
     await Promise.allSettled([runMuxLoop(api, signal), runHostLoop(api, signal)]);

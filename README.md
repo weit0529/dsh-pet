@@ -120,6 +120,7 @@ python encode_thumbs.py      # 转码 640×360 播放变体 → step04/
 ```
 
 > 如果你有 Mac（或 macOS 虚拟机），**无需 GitHub Actions**，本地直接跑同样的编码脚本即可：
+>
 > ```sh
 > chmod +x scripts/encode_hevc_alpha.sh
 > ./scripts/encode_hevc_alpha.sh dsh-pet/assets/webm dsh-pet/assets/mov
@@ -206,9 +207,9 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari（HEVC-alpha mov）
 
 ## ⚙️ 余额展示（Balance）
 
-余额是"事件动画"的一种：运行时按 `eventsRefreshSec.balance`（秒）周期拉取当前服务商（跟随 `agent-default-model` 的 provider）的余额/用量数据，每次刷新按档位触发一次余额动画，并在宠物头顶弹出**联想气泡**（气泡为角色"思考"式白泡，随宠物大小等比缩放，10 秒后自动消失）：
+余额是"事件动画"的一种：运行时按 `eventsRefreshSec.balance`（秒）周期拉取**当前 DSH 会话实际选择的 provider** 的余额/用量数据；首次成功或档位变化时触发余额动画，并在宠物头顶弹出**联想气泡**（气泡为角色"思考"式白泡，随宠物大小等比缩放，10 秒后自动消失）：
 
-- **DeepSeek 官方（`deepseek-official`）**：气泡显示账户余额（如 `余额 ¥8.79`）；余额按 ¥20 满额折算成已用百分比，分 6 档播放动画（钱袋满溢 → 金袋叮当 → 钱袋如常 → 数金皱眉 → 袋空如洗 → 分文不剩）
+- **DeepSeek 官方（`deepseek-official`）**：气泡显示账户余额（如 `余额 ¥8.79`）；余额按 `deepseekFullBalanceCny`（默认 ¥20）折算成已用百分比，分 6 档播放动画（钱袋满溢 → 金袋叮当 → 钱袋如常 → 数金皱眉 → 袋空如洗 → 分文不剩）
 - **OpenCode Zen Go（`opencode-go`）**：气泡显示 5h/周/月 三个额度窗口中最先告急的一个（如 `周额度已用 88%` / `2.5 天重置`），同样按已用百分比分档
 - **按宠物开关**：`pets[i].balanceEnabled`（必填布尔）控制该宠物是否触发余额动画/显示气泡；全部宠物关闭时自动跳过余额轮询
 - **所需凭据**：对应 provider 的 API key（`deepseek-official` → `DEEPSEEK_API_KEY`；`opencode-go` → `OPENCODE_GO_API_KEY`），在 DSH 凭据中配置后启用；未匹配的服务商按设计不触发动画、不显示气泡
@@ -220,6 +221,7 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari（HEVC-alpha mov）
 > 💡 **两条途径只是编辑入口不同，最终都是同一份用户配置**——配置能力远不止设置页那几个选项：设置页只能改「大小/位置/多开」，但**手动编写配置文件可以任意自由配置**（动画池、播放权重、事件动画、刷新周期……），只要**格式与包内默认配置 `config.jsonc` 一致**即可，用户配置会**整体覆盖**对应字段的默认值。
 
 ### 方式一：设置页（推荐）
+
 DSH 设置 → 「桌宠配置」：
 
 - **大小**：宽度 px（高度自动 = 宽度 × 9/16）
@@ -229,6 +231,7 @@ DSH 设置 → 「桌宠配置」：
 - 点「保存」**即时生效**（无需刷新）；「恢复默认」回到 config.jsonc 默认
 
 ### 方式二：config.jsonc（单一来源）
+
 插件包内 `dsh-pet/assets/config.jsonc` 的 `pets` 数组定义**默认宠物**：
 
 ```jsonc
@@ -243,15 +246,17 @@ DSH 设置 → 「桌宠配置」：
 
 ### 方式三：手动编辑配置文件（高级，任意自由配置）
 
-用户层配置文件位于 `$DSH_HOME/dsh-pet/main-config.json`。**它和包内默认配置是同一套格式**——想改什么直接照着 `assets/config.jsonc` 的结构写即可，写错的字段/缺失的字段回落默认，无需（也无法）写完整份：
+用户层配置文件位于 `$DSH_HOME/dsh-pet/main-config.json`。**它和包内默认配置是同一套格式**——只需照着 `assets/config.jsonc` 写想覆盖的字段；缺失字段回落默认，格式错误则显式校验失败：
 
-| 字段 | 作用 | 格式与默认一致即可 |
-|---|---|---|
-| `pets` | 宠物列表（大小/位置/多开/余额开关） | 数组，每项同 `pets[]` 结构 |
-| `animations` | **动画池**：idle / turn / drag / clicks / moves / categories / events（余额等事件动画） | 同 `animations` 结构 |
-| `animationWeights` | 动画链播放权重（idle / turn / move） | 同 `animationWeights` 结构 |
-| `eventsRefreshSec` | 事件刷新周期（秒） | 同 `eventsRefreshSec` 结构 |
-| `notificationsEnabled` | 系统通知总开关（布尔） | 同 `notificationsEnabled` |
+| 字段                     | 作用                                                                                    | 格式与默认一致即可                                               |
+| ------------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `pets`                   | 宠物列表（大小/位置/多开/余额开关）                                                     | 数组，每项同 `pets[]` 结构                                       |
+| `animations`             | **动画池**：idle / turn / drag / clicks / moves / categories / events（余额等事件动画） | 同 `animations` 结构                                             |
+| `animationWeights`       | 动画链播放权重（idle / turn / move）                                                    | 同 `animationWeights` 结构                                       |
+| `eventsRefreshSec`       | 事件刷新周期（秒）                                                                      | 同 `eventsRefreshSec` 结构                                       |
+| `notificationsEnabled`   | 系统通知总开关（布尔）                                                                  | 同 `notificationsEnabled`                                        |
+| `deepseekFullBalanceCny` | DeepSeek 钱袋动画的“满额”参考值（仅影响档位）                                           | 正数，默认 `20`                                                  |
+| `pricing`                | DeepSeek 单价覆盖；推荐用 `pricing.models.<modelId>` 逐模型填写                         | `input` / `cacheRead` / `output` / `peakMultiplier` / `currency` |
 
 > 覆盖语义：用户层给出即**整体替换**该字段（如写了 `animations` 就用你的整份动画池，替代默认），没写的字段回落包内默认。校验在插件加载时执行——格式错误会在 DSH 控制台显式报错，不会静默运行残缺配置。
 
@@ -420,6 +425,7 @@ DSH 设置 → 「桌宠配置」：
 </p>
 
 > 注：动画为透明背景；GIF 预览中透明部分显示为页面底色，实际 webm 播放为透明。
+
 ## 文档
 
 - [设计与实现](DESIGN.md) —— 架构、动画链模型、素材链
@@ -434,27 +440,33 @@ DSH 设置 → 「桌宠配置」：
 以下为本仓库在原始版本基础上新增/调整的功能，随插件源码一并维护：
 
 ### 1. 余额与时段显示（悬停气泡）
+
 - **鼠标悬停到桌宠上**：弹出余额气泡，显示 DeepSeek 账户余额（**蓝色字体**）与当前计价时段
 - 时段文案与颜色：**梁文峰**（红色，代表高峰时段）/ **梁文谷**（绿色，代表空闲时段）
 - 时段判定遵循 DeepSeek 官方峰谷定价规则（北京时间）：工作日 9:00–12:00、14:00–18:00 为高峰；其余为空闲；周六/周日全天按空闲计价（自 2026-08-23 起周末不再区分峰谷）
 
 ### 2. 每轮对话消耗提示（独立气泡）
+
 - 每次完成一轮对话（用户输入 → LLM 输出完成）后，自动弹出**独立深色样式气泡**：`本轮消耗 / CNY x.xxxx`
 - 气泡持续 **5 秒**自动消失；**鼠标移动到桌宠上**时立即收起
 - 消耗金额按 **harness 端实际消耗的 token 数** × **DeepSeek 官方单价**计算：
-  - 输入（缓存未命中）/ 输入（缓存命中）/ 输出分别计费
+  - 按 DSH `session/event` 中的当前会话、实际 provider/model 和 token usage 结算；非 DeepSeek 模型不会误计为 DeepSeek 费用
+  - 输入（缓存未命中）/ 缓存写入 / 输入（缓存命中）/ 输出分别计费
   - 区分**空闲时段 / 高峰时段**（高峰 = 空闲 × 2）
-  - 单价自动从**官网中文定价文档**爬取（人民币计价），每 6 小时刷新，抓取失败回落内置默认价
+  - 单次抓取**官网中文定价文档**中的全部模型（人民币计价），每 6 小时刷新；已知模型抓取失败回落对应内置价，未知模型不套用其他模型价格
+- 每个会话独立保存最近一轮结果；切换会话不会串出其他页面的金额；多桌宠只由第一只启用余额的宠物显示一次费用气泡
 
 ### 3. 余额实时刷新
+
 - 余额查询走 DeepSeek 官方 `GET /user/balance` 接口（与官网 usage 页面同一账户数据源）
-- **每 4 秒自动刷新**一次（原默认 1800 秒），悬停气泡显示最新余额
+- 按 `eventsRefreshSec.balance` 配置周期刷新（默认 180 秒），悬停气泡显示最新余额
 - **点击桌宠**：立即触发一次余额刷新（点击动画照常播放）
-- 请求/响应均已禁用缓存（`no-store`），保证拿到实时值
+- 请求/响应均已禁用缓存（`no-store`）；点击、周期与 `/balance` 命令共享同一个单飞请求，慢网络不会叠加请求
 
 ### 4. 其他
-- 删除了不可用的「桌面独立窗口」功能：桌宠仅显示在 DSH Web 页面内（`shell.overlay`），不依赖独立浏览器窗口
-- 余额动画仅在档位变化时触发，避免高频刷新（4s）下动画轰炸
-- 新增诊断端点 `/dsh-pet-7340/turn-spend/debug`：可查看最近会话事件样本、token 累计、当前定价（定位排查用）
 
-> 💡 高级：可在用户配置 `$DSH_HOME/dsh-pet/main-config.json` 顶层添加 `pricing` 对象覆盖官方单价（`input` / `cacheRead` / `output` / `peakMultiplier` / `currency`），官方调价时无需改插件。
+- 删除了不可用的「桌面独立窗口」功能：桌宠仅显示在 DSH Web 页面内（`shell.overlay`），不依赖独立浏览器窗口
+- 余额动画仅在首次成功或档位变化时触发，避免重复播放
+- 诊断端点 `/dsh-pet-7340/turn-spend/debug` 只返回聚合计数、去标识事件与定价来源，不暴露会话 ID
+
+> 💡 高级：可在用户配置 `$DSH_HOME/dsh-pet/main-config.json` 顶层添加 `pricing.models.<modelId>` 覆盖各模型单价（`input` / `cacheRead` / `output` / `peakMultiplier` / `currency`）。旧的顶层 `pricing` 平铺格式仍兼容，但只作用于 `deepseek-v4-flash`。

@@ -74,9 +74,7 @@ function injectBubbleCss(): void {
  * 制造余额气泡（工厂）。
  * 工厂内注入样式一次（与 pet.ts 的 injectCss 同模式）；组件为哑组件，props = { state, on }。
  */
-export function makeBalanceBubble(rt: {
-  h: typeof jsx;
-}): (props: { state: BalanceState; on: boolean }) => ReactNode {
+export function makeBalanceBubble(rt: { h: typeof jsx }): (props: { state: BalanceState; on: boolean }) => ReactNode {
   const { h } = rt;
   injectBubbleCss();
 
@@ -159,8 +157,7 @@ export function makeSpendBubble(rt: {
   return function SpendBubble({ amount, currency, on }: { amount: number; currency: string; on: boolean }) {
     const label = '本轮消耗';
     // 金额显示：>= 0.01 保留 2 位；< 0.01 保留 4 位（单轮消耗常为万分位小数，避免显示 0.00）
-    const text =
-      amount >= 0.01 ? amount.toFixed(2) : amount >= 0.0001 ? amount.toFixed(4) : '<0.0001';
+    const text = amount >= 0.01 ? amount.toFixed(2) : amount >= 0.0001 ? amount.toFixed(4) : '<0.0001';
     const value = (currency ? currency : 'CNY') + ' ' + text;
     return h('div', {
       className: 'dsh-pet-spend' + (on ? ' is-on' : ''),

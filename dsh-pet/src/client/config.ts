@@ -29,6 +29,7 @@ export const EMPTY_CONF: ClientConfig = {
   },
   animationWeights: { idle: 0, turn: 0, move: 0 },
   eventsRefreshSec: {},
+  deepseekFullBalanceCny: 20,
 };
 
 /** 校验 config.jsonc 解析结果并返回 ClientConfig；任一字段缺失/非法即视为配置错误抛出 */
@@ -45,9 +46,14 @@ export function assertClientConfig(raw: unknown): ClientConfig {
   const pets: Pet[] = [];
   for (const p of petsArr) {
     const id = String(p?.id ?? '');
-    if (!id || seen.has(id)) throw new Error('dsh-pet: pet id 非法或重复「' + id + '」');
+    // eslint-disable-next-line no-control-regex -- match host-side path/control-character validation
+    if (!id || id.length > 64 || /[\\/:*?"<>|\x00-\x1f]/.test(id) || seen.has(id)) {
+      throw new Error('dsh-pet: pet id 非法或重复「' + id + '」');
+    }
     const size = Number(p?.size);
-    if (!Number.isFinite(size) || size <= 0) throw new Error('dsh-pet: pet「' + id + '」大小非法');
+    if (!Number.isFinite(size) || size < 120 || size > 2000) {
+      throw new Error('dsh-pet: pet「' + id + '」大小非法（需在 120–2000px）');
+    }
     const balanceEnabled = p?.balanceEnabled;
     if (typeof balanceEnabled !== 'boolean')
       throw new Error('dsh-pet: pet「' + id + '」缺少 balanceEnabled（需为布尔值 true/false）');
@@ -55,54 +61,139 @@ export function assertClientConfig(raw: unknown): ClientConfig {
     if (typeof corner !== 'string' || !CORNER_SET.has(corner)) throw new Error('dsh-pet: pet「' + id + '」corner 非法');
     const marginX = Number(p?.position?.marginX);
     const marginY = Number(p?.position?.marginY);
-    if (!Number.isFinite(marginX) || !Number.isFinite(marginY)) throw new Error('dsh-pet: pet「' + id + '」边距非法');
+    if (
+      !Number.isFinite(marginX) ||
+      !Number.isFinite(marginY) ||
+      Math.abs(marginX) > 100_000 ||
+      Math.abs(marginY) > 100_000
+    ) {
+      throw new Error('dsh-pet: pet「' + id + '」边距非法');
+    }
     seen.add(id);
     pets.push({ id, size, balanceEnabled, position: { corner: corner as Corner, marginX, marginY } });
   }
 
   // ---- animations ----
-  const a = cfg.animations;
-  if (!a || typeof a !== 'object') throw new Error('dsh-pet: 缺少 animations');
-  for (const key of ['idle', 'turn', 'drag', 'clicks']) {
-    if (!Array.isArray(a[key])) throw new Error('dsh-pet: animations.' + key + ' 缺失');
-  }
+  const rawAnimations = cfg.animations;
+  if (!rawAnimations || typeof rawAnimations !== 'object') throw new Error('dsh-pet: 缺少 animations');
+  const stringPool = (value: unknown, label: string, allowEmpty: boolean): string[] => {
+    if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+      throw new Error('dsh-pet: ' + label + ' 必须是' + (allowEmpty ? '' : '非空') + '动画名数组');
+    }
+    if (value.some((name) => typeof name !== 'string' || name.trim().length === 0)) {
+      throw new Error('dsh-pet: ' + label + ' 含非法动画名');
+    }
+    return value.map((name) => String(name));
+  };
+  const idle = stringPool(rawAnimations.idle, 'animations.idle', false);
+  const turn = stringPool(rawAnimations.turn, 'animations.turn', true);
+  const drag = stringPool(rawAnimations.drag, 'animations.drag', true);
+  const clicks = stringPool(rawAnimations.clicks, 'animations.clicks', true);
+
+  const rawMoves = rawAnimations.moves;
   if (
-    !a.moves ||
-    typeof a.moves !== 'object' ||
-    typeof a.moves.default !== 'object' ||
-    a.moves.default === null ||
-    !Array.isArray(a.moves.actions)
+    !rawMoves ||
+    typeof rawMoves !== 'object' ||
+    !rawMoves.default ||
+    typeof rawMoves.default !== 'object' ||
+    !Array.isArray(rawMoves.actions)
   ) {
     throw new Error('dsh-pet: animations.moves 结构非法');
   }
-  if (!Array.isArray(a.categories)) throw new Error('dsh-pet: animations.categories 缺失');
-
-  // ---- animations.events（事件动画：事件名 → 非空 string 数组，数组顺序即档位顺序）----
-  // 事件功能已内置：events 段与 balance 事件均为必需，缺失即配置不完整，显式报错
-  const ev = a.events;
-  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) throw new Error('dsh-pet: 缺少 animations.events');
-  for (const [eventName, pool] of Object.entries(ev)) {
-    if (!Array.isArray(pool) || pool.length === 0) {
-      throw new Error('dsh-pet: animations.events.' + eventName + ' 必须是非空动画名数组');
-    }
-    for (const name of pool) {
-      if (typeof name !== 'string' || name.length === 0) {
-        throw new Error('dsh-pet: animations.events.' + eventName + ' 含非法动画名');
+  const moveDefaults: Record<string, number> = {};
+  for (const key of ['minDist', 'maxDist', 'margin', 'leadSec', 'tailSec']) {
+    const n = Number(rawMoves.default[key]);
+    if (!Number.isFinite(n) || n < 0) throw new Error('dsh-pet: animations.moves.default.' + key + ' 非法');
+    moveDefaults[key] = n;
+  }
+  if (moveDefaults.maxDist < moveDefaults.minDist) {
+    throw new Error('dsh-pet: animations.moves.default.maxDist 不能小于 minDist');
+  }
+  const moveActions = rawMoves.actions.map((action: unknown, index: number) => {
+    if (!action || typeof action !== 'object') throw new Error('dsh-pet: animations.moves.actions[' + index + '] 非法');
+    const item = action as Record<string, unknown>;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    if (!name) throw new Error('dsh-pet: animations.moves.actions[' + index + '].name 非法');
+    const params: Record<string, number> = {};
+    if (item.params !== undefined) {
+      if (!item.params || typeof item.params !== 'object' || Array.isArray(item.params)) {
+        throw new Error('dsh-pet: animations.moves.actions[' + index + '].params 非法');
+      }
+      for (const [key, value] of Object.entries(item.params)) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) throw new Error('dsh-pet: 移动参数 ' + key + ' 非法');
+        params[key] = n;
       }
     }
-  }
-  const balance = ev.balance;
-  if (!Array.isArray(balance) || balance.length === 0) {
-    throw new Error('dsh-pet: animations.events.balance 缺失或为空（余额事件必备）');
+    return Object.keys(params).length > 0 ? { name, params } : { name };
+  });
+
+  if (!Array.isArray(rawAnimations.categories)) throw new Error('dsh-pet: animations.categories 缺失');
+  const categories: Animations['categories'] = rawAnimations.categories.map((category: unknown, index: number) => {
+    if (!category || typeof category !== 'object') {
+      throw new Error('dsh-pet: animations.categories[' + index + '] 非法');
+    }
+    const item = category as Record<string, unknown>;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    const weight = Number(item.weight);
+    if (!id || !Number.isFinite(weight) || weight < 0) {
+      throw new Error('dsh-pet: animations.categories[' + index + '] id/weight 非法');
+    }
+    if (item.noMirror !== undefined && typeof item.noMirror !== 'boolean') {
+      throw new Error('dsh-pet: animations.categories[' + index + '].noMirror 非法');
+    }
+    return {
+      id,
+      weight,
+      ...(item.noMirror === true ? { noMirror: true } : {}),
+      actions: stringPool(item.actions, 'animations.categories.' + id + '.actions', false),
+    };
+  });
+  if (categories.reduce((sum: number, category: Animations['categories'][number]) => sum + category.weight, 0) <= 0) {
+    throw new Error('dsh-pet: animations.categories 权重合计必须大于 0');
   }
 
+  const rawEvents = rawAnimations.events;
+  if (!rawEvents || typeof rawEvents !== 'object' || Array.isArray(rawEvents)) {
+    throw new Error('dsh-pet: 缺少 animations.events');
+  }
+  const events: Record<string, string[]> = {};
+  for (const [eventName, pool] of Object.entries(rawEvents)) {
+    events[eventName] = stringPool(pool, 'animations.events.' + eventName, false);
+  }
+  if (!events.balance || events.balance.length < 6) {
+    throw new Error('dsh-pet: animations.events.balance 至少需要 6 个档位动画');
+  }
+
+  const animations: Animations = {
+    idle,
+    turn,
+    drag,
+    clicks,
+    moves: { default: moveDefaults, actions: moveActions },
+    categories,
+    events,
+  };
+
   // ---- animationWeights ----
-  const w = cfg.animationWeights;
-  if (!w || typeof w !== 'object') throw new Error('dsh-pet: 缺少 animationWeights');
-  for (const key of ['idle', 'turn', 'move']) {
-    const v = Number(w[key]);
-    if (!Number.isFinite(v) || v < 0) throw new Error('dsh-pet: animationWeights.' + key + ' 非法');
-    w[key] = v;
+  const rawWeights = cfg.animationWeights;
+  if (!rawWeights || typeof rawWeights !== 'object') throw new Error('dsh-pet: 缺少 animationWeights');
+  const animationWeights: Weights = {
+    idle: Number(rawWeights.idle),
+    turn: Number(rawWeights.turn),
+    move: Number(rawWeights.move),
+  };
+  for (const [key, value] of Object.entries(animationWeights)) {
+    if (!Number.isFinite(value) || value < 0) throw new Error('dsh-pet: animationWeights.' + key + ' 非法');
+  }
+  if (animationWeights.turn > 0 && turn.length === 0) {
+    throw new Error('dsh-pet: animationWeights.turn 大于 0 时 animations.turn 不能为空');
+  }
+  if (animationWeights.move > 0 && moveActions.length === 0) {
+    throw new Error('dsh-pet: animationWeights.move 大于 0 时 animations.moves.actions 不能为空');
+  }
+  if (animationWeights.idle + animationWeights.turn + animationWeights.move > 100) {
+    throw new Error('dsh-pet: animationWeights 顶层权重合计不能超过 100');
   }
 
   // ---- eventsRefreshSec（事件刷新周期：事件名 → 正数秒数）----
@@ -119,12 +210,24 @@ export function assertClientConfig(raw: unknown): ClientConfig {
   const balanceSec = cleaned.balance;
   if (balanceSec === undefined) throw new Error('dsh-pet: eventsRefreshSec.balance 缺失（余额事件周期必备）');
 
+  const deepseekFullBalanceCny = Number(cfg.deepseekFullBalanceCny);
+  if (!Number.isFinite(deepseekFullBalanceCny) || deepseekFullBalanceCny <= 0) {
+    throw new Error('dsh-pet: deepseekFullBalanceCny 非法（需为正数）');
+  }
+
   // ---- notificationsEnabled（系统通知总开关：必填布尔值）----
   const notificationsEnabled = cfg.notificationsEnabled;
   if (typeof notificationsEnabled !== 'boolean')
     throw new Error('dsh-pet: 缺少 notificationsEnabled（需为布尔值 true/false）');
 
-  return { notificationsEnabled, pets, animations: a, animationWeights: w, eventsRefreshSec: cleaned };
+  return {
+    notificationsEnabled,
+    pets,
+    animations,
+    animationWeights,
+    eventsRefreshSec: cleaned,
+    deepseekFullBalanceCny,
+  };
 }
 
 /** 合并宠物：用户层（{ pets }，与 jsonc 同构）全量替换默认；无用户层回落默认 */
@@ -139,6 +242,7 @@ export interface UserOverrides {
   animations?: Animations;
   animationWeights?: Weights;
   eventsRefreshSec?: Record<string, number>;
+  deepseekFullBalanceCny?: number;
   /** 系统通知总开关（可选）：用户层给出时优先于默认配置 */
   notificationsEnabled?: boolean;
 }
@@ -149,6 +253,7 @@ export function applyUserOverrides(base: ClientConfig, user: UserOverrides): Cli
   if (user.animations) next.animations = user.animations;
   if (user.animationWeights) next.animationWeights = user.animationWeights;
   if (user.eventsRefreshSec) next.eventsRefreshSec = user.eventsRefreshSec;
+  if (user.deepseekFullBalanceCny !== undefined) next.deepseekFullBalanceCny = user.deepseekFullBalanceCny;
   // 系统通知总开关：用户层显式给出时优先，缺省回落默认配置
   if (user.notificationsEnabled !== undefined) next.notificationsEnabled = user.notificationsEnabled;
   return next;

@@ -120,6 +120,7 @@ The `step04/` output above is **VP9-alpha webm** (natively supported by Chrome/E
 ```
 
 > If you have a Mac (or a macOS VM), **you don't need GitHub Actions** — run the same encoder script locally:
+>
 > ```sh
 > chmod +x scripts/encode_hevc_alpha.sh
 > ./scripts/encode_hevc_alpha.sh dsh-pet/assets/webm dsh-pet/assets/mov
@@ -199,7 +200,7 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari (HEVC-alpha mov)
 ## Plugin Features
 
 - **A pure pet, nothing else**: it just keeps you company — no weather lookups, no system monitoring, no agent-state sensing; the only "business feature" is the **optional balance display** (see below). Zero core changes (never touches the DSH kernel)
-- **Balance display**: shows the current LLM provider's balance/quota in real time — DeepSeek official shows the account balance (¥); OpenCode Zen Go shows whichever of the 5h/weekly/monthly quota windows is tightest; on every refresh it plays a tiered balance animation and pops a thinking bubble above the head (scales with the pet size, auto-dismisses after 10 s); each pet can enable it independently (`balanceEnabled`)
+- **Balance and per-turn cost**: follows the active DSH session's actual provider/model. DeepSeek official shows the account balance and a completed turn's cost from reported token usage; session switching never leaks another session's value
 - **Animation chain**: each animation (idle included) is immediately followed by a weight-based pick (weights live in `config.jsonc`; default idle 10 / turn 5 / move 5 + per-category weights), endless and seamless
 - **Multi-pet**: configure multiple pets at once, each with its own size and position (add/remove in the "Pet Config" settings page)
 - **Screen wandering**: walks toward its facing direction, checks the space ahead, never walks off screen
@@ -210,12 +211,14 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari (HEVC-alpha mov)
 
 ## ⚙️ Balance Display
 
-Balance is a kind of "event animation": at runtime the plugin polls the current provider's (following `agent-default-model`) balance/quota endpoint every `eventsRefreshSec.balance` seconds; on each refresh it plays a tiered balance animation and pops a **thinking bubble** above the pet's head (a white "thought" bubble that scales with the pet size and auto-dismisses after 10 seconds):
+Balance is a kind of "event animation": at runtime the plugin polls the active DSH session's provider every `eventsRefreshSec.balance` seconds; the first successful result or a tier change plays an animation and pops a **thinking bubble** above the pet's head (it scales with the pet size and auto-dismisses after 10 seconds):
 
-- **DeepSeek official (`deepseek-official`)**: the bubble shows the account balance (e.g. `余额 ¥8.79`); the balance is converted to a used-percentage against ¥20 as full, then mapped to 6 animation tiers (钱袋满溢 → 金袋叮当 → 钱袋如常 → 数金皱眉 → 袋空如洗 → 分文不剩)
+- **DeepSeek official (`deepseek-official`)**: the bubble shows the account balance; `deepseekFullBalanceCny` (CNY 20 by default) is the full-bag reference for the 6 animation tiers
 - **OpenCode Zen Go (`opencode-go`)**: the bubble shows whichever of the 5h/weekly/monthly quota windows runs out first (e.g. `周额度已用 88%` / `2.5 天重置`), mapped to the same percentage tiers
 - **Per-pet switch**: `pets[i].balanceEnabled` (required boolean) controls whether that pet triggers balance animations/shows the bubble; when every pet has it disabled, polling is skipped entirely
 - **Required credentials**: the provider's API key (`deepseek-official` → `DEEPSEEK_API_KEY`; `opencode-go` → `OPENCODE_GO_API_KEY`), configured in DSH credentials; unmapped providers deliberately never trigger the animation or bubble
+- **Per-turn cost**: uses the active session's actual DeepSeek model plus input, cache-read, cache-write, and output usage. Pricing is fetched once for all models and refreshed every 6 hours; unknown models are never charged using another model's price
+- Balance refreshes are single-flight and scheduled only after the previous request ends, so clicking, polling, and `/balance` do not create a request pile-up
 
 ## ⚙️ Configuration (Size / Position / Multi-pet)
 
@@ -224,6 +227,7 @@ The pet's size, position and multi-pet setup can be configured in two ways:
 > 💡 **Both paths are just different editors for the same user config** — the configurable surface is far larger than the settings page: the settings page only edits size/position/multi-pet, but **editing the config file by hand unlocks arbitrary free configuration** (animation pools, play weights, event animations, refresh periods…). Just keep the **same shape as the default `config.jsonc`**; user config **overrides** the corresponding fields wholesale.
 
 ### Via the settings page (recommended)
+
 DSH Settings → **Pet Config**:
 
 - **Size**: width in px (height is automatic = width × 9/16)
@@ -233,6 +237,7 @@ DSH Settings → **Pet Config**:
 - **Save** applies **instantly** (no page refresh needed); **Reset to default** restores the `config.jsonc` defaults
 
 ### Via config.jsonc (single source of truth)
+
 The `pets` array in `dsh-pet/assets/config.jsonc` defines the **default pets**:
 
 ```jsonc
@@ -247,15 +252,17 @@ The `pets` array in `dsh-pet/assets/config.jsonc` defines the **default pets**:
 
 ### Via editing the config file directly (advanced, fully free config)
 
-The user-layer config lives at `$DSH_HOME/dsh-pet/main-config.json`. **It uses the exact same shape as the package default** — copy any part of `assets/config.jsonc` you want to change; missing/invalid fields fall back to the defaults (you don't need, and can't, write the whole file):
+The user-layer config lives at `$DSH_HOME/dsh-pet/main-config.json`. **It uses the exact same shape as the package default** — copy only the fields you want to change; omitted fields fall back to defaults, while malformed fields fail validation explicitly:
 
-| Field | Purpose | Shape |
-|---|---|---|
-| `pets` | pet list (size/position/multi-pet/balance toggle) | array, same as `pets[]` |
-| `animations` | **animation pools**: idle / turn / drag / clicks / moves / categories / events (balance, …) | same as `animations` |
-| `animationWeights` | animation-chain weights (idle / turn / move) | same as `animationWeights` |
-| `eventsRefreshSec` | event refresh period (seconds) | same as `eventsRefreshSec` |
-| `notificationsEnabled` | system-notification master switch (boolean) | same as `notificationsEnabled` |
+| Field                    | Purpose                                                                                     | Shape                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `pets`                   | pet list (size/position/multi-pet/balance toggle)                                           | array, same as `pets[]`                                                        |
+| `animations`             | **animation pools**: idle / turn / drag / clicks / moves / categories / events (balance, …) | same as `animations`                                                           |
+| `animationWeights`       | animation-chain weights (idle / turn / move)                                                | same as `animationWeights`                                                     |
+| `eventsRefreshSec`       | event refresh period (seconds)                                                              | same as `eventsRefreshSec`                                                     |
+| `notificationsEnabled`   | system-notification master switch (boolean)                                                 | same as `notificationsEnabled`                                                 |
+| `deepseekFullBalanceCny` | full-bag reference for DeepSeek balance tiers                                               | positive number; default `20`                                                  |
+| `pricing`                | optional per-model DeepSeek prices                                                          | `pricing.models.<modelId>` with input/cacheRead/output/peakMultiplier/currency |
 
 > Override semantics: a field present in the user layer **replaces the whole default field** (e.g. writing `animations` swaps in your entire animation pool); omitted fields fall back to the package defaults. Validation runs at plugin load — malformed configs fail loudly in the DSH console instead of silently running a broken config.
 
