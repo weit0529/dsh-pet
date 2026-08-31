@@ -16,6 +16,7 @@ const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 
 /** ClientConfig 类型占位（data-less；PetMulti 加载后由 assertClientConfig 赋真实值） */
 export const EMPTY_CONF: ClientConfig = {
+  desktopEnabled: false,
   notificationsEnabled: true,
   pets: [],
   animations: {
@@ -215,12 +216,15 @@ export function assertClientConfig(raw: unknown): ClientConfig {
     throw new Error('dsh-pet: deepseekFullBalanceCny 非法（需为正数）');
   }
 
-  // ---- notificationsEnabled（系统通知总开关：必填布尔值）----
+  // ---- desktopEnabled / notificationsEnabled（全局开关：必填布尔值）----
+  const desktopEnabled = cfg.desktopEnabled;
+  if (typeof desktopEnabled !== 'boolean') throw new Error('dsh-pet: 缺少 desktopEnabled（需为布尔值 true/false）');
   const notificationsEnabled = cfg.notificationsEnabled;
   if (typeof notificationsEnabled !== 'boolean')
     throw new Error('dsh-pet: 缺少 notificationsEnabled（需为布尔值 true/false）');
 
   return {
+    desktopEnabled,
     notificationsEnabled,
     pets,
     animations,
@@ -245,6 +249,8 @@ export interface UserOverrides {
   deepseekFullBalanceCny?: number;
   /** 系统通知总开关（可选）：用户层给出时优先于默认配置 */
   notificationsEnabled?: boolean;
+  /** 桌面伴生程序开关（可选）。 */
+  desktopEnabled?: boolean;
 }
 
 /** 合并用户覆盖片段到完全体配置：pets / animations / animationWeights / eventsRefreshSec 有则整体替换，缺省回落默认 */
@@ -256,5 +262,6 @@ export function applyUserOverrides(base: ClientConfig, user: UserOverrides): Cli
   if (user.deepseekFullBalanceCny !== undefined) next.deepseekFullBalanceCny = user.deepseekFullBalanceCny;
   // 系统通知总开关：用户层显式给出时优先，缺省回落默认配置
   if (user.notificationsEnabled !== undefined) next.notificationsEnabled = user.notificationsEnabled;
+  if (user.desktopEnabled !== undefined) next.desktopEnabled = user.desktopEnabled;
   return next;
 }

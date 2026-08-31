@@ -40,3 +40,9 @@ test('接受旧式与逐模型定价覆盖', () => {
     }),
   );
 });
+
+test('桌面开关只接受布尔值并参与安全合并', () => {
+  assert.deepEqual(sanitizeUserConfigPatch({ desktopEnabled: true }), { desktopEnabled: true });
+  assert.equal(sanitizeUserConfigPatch({ desktopEnabled: 'yes' }), null);
+  assert.equal(mergeUserConfig({ notificationsEnabled: true }, { desktopEnabled: false }).notificationsEnabled, true);
+});

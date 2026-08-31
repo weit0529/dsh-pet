@@ -9,11 +9,11 @@
   <a href="https://awesome-dsh-plugin.com"><img alt="awesome dsh plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
   <a href="https://github.com/PC2005-cloud/dsh-pet"><img alt="repo size" src="https://img.shields.io/github/repo-size/PC2005-cloud/dsh-pet"></a>
   <a href="https://github.com/PC2005-cloud/dsh-pet/issues"><img alt="issues" src="https://img.shields.io/github/issues/PC2005-cloud/dsh-pet"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness%20Web-8A2BE2">
+  <img alt="platform" src="https://img.shields.io/badge/platform-DSH%20Web%20%2B%20Windows-8A2BE2">
   <img alt="assets" src="https://img.shields.io/badge/assets-dynamic%20animations-ff69b4">
 </p>
 
-一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 界面里的桌面宠物：待机呼吸、随机动作（含打瞌睡）、偶尔转向、屏幕漫游、点击反应、可拖拽——还能实时展示 LLM 服务商的余额/额度（余额动画 + 头顶联想气泡）。
+一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 界面里的桌面宠物，也可通过可选伴生组件显示在 Windows 系统桌面：待机呼吸、随机动作、屏幕漫游、点击、拖拽、余额和单轮费用均保留。
 
 这不是一个普通插件，而是**完整的三件套项目**：
 
@@ -180,6 +180,7 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari（HEVC-alpha mov）
 ├── .github/workflows/       # CI：hevc-alpha.yml（macOS runner 批量转码 webm → mov，手动触发）
 ├── dsh-pet/                 # ③ 插件（可独立 npm 发布）
 │   ├── src/                 #   TS 源码（host 半侧 /dsh-pet-7340 路由 + client 半侧动画链）
+│   ├── desktop/             #   可选 Windows Electron 伴生组件（独立安装/打包，不进入插件 npm 包）
 │   ├── lib/                 #   tsdown 构建产物（prepare 自动构建，lib/*.js 不入库）
 │   ├── assets/webm/         #   640×360 VP9-alpha 播放动画（Chrome/Edge/Firefox 版素材）
 │   ├── assets/mov/          #   640×360 HEVC-with-Alpha 播放动画（Safari 版素材）
@@ -199,6 +200,7 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari（HEVC-alpha mov）
 - **余额展示**：实时显示当前 LLM 服务商的余额/额度——DeepSeek 官方显示账户余额（¥），OpenCode Zen Go 显示 5h/周/月 三个额度窗口中最紧张的一个；每次刷新按档位播放余额动画，头顶弹出联想气泡（随宠物大小等比缩放，10 秒后自动消失）；每只宠物可独立开关（`balanceEnabled`）
 - **动画链**：每个动画（含待机）播完立即按权重选下一个（权重配置于 `config.jsonc`，默认 idle 10 / turn 5 / move 5 + 动作分类权重），首尾相接永不停止
 - **多开**：可配置同时显示多个宠物，每只宠物独立的大小与位置（设置页「桌宠配置」添加/删除）
+- **可选 Windows 桌面显示**：一只宠物一个透明置顶原生窗口；开关只控制桌面副本，原有 Web 桌宠不受影响
 - **屏幕漫游**：朝 facing 方向行走，先检查空间、不走出屏幕
 - **点击/拖拽**：点击有回应动画，可拖到任意位置
 - **左右朝向**：所有动画可镜像，人物可朝左/朝右
@@ -224,6 +226,7 @@ dsh plugin --profile web add dsh-pet@hevc   # Safari（HEVC-alpha mov）
 
 DSH 设置 → 「桌宠配置」：
 
+- **启用桌面显示**：安装 `dsh-pet-desktop` 后勾选；设置页显示未安装 / 启动中 / 已运行 / 启动失败状态
 - **大小**：宽度 px（高度自动 = 宽度 × 9/16）
 - **位置**：四角（corner）＋ 水平/垂直边距（marginX / marginY）
 - **余额功能**：勾选后该宠物才会触发余额动画并显示余额气泡
@@ -255,6 +258,7 @@ DSH 设置 → 「桌宠配置」：
 | `animationWeights`       | 动画链播放权重（idle / turn / move）                                                    | 同 `animationWeights` 结构                                       |
 | `eventsRefreshSec`       | 事件刷新周期（秒）                                                                      | 同 `eventsRefreshSec` 结构                                       |
 | `notificationsEnabled`   | 系统通知总开关（布尔）                                                                  | 同 `notificationsEnabled`                                        |
+| `desktopEnabled`         | Windows 桌面伴生组件总开关；不影响 Web overlay                                          | 布尔值，默认 `false`                                              |
 | `deepseekFullBalanceCny` | DeepSeek 钱袋动画的“满额”参考值（仅影响档位）                                           | 正数，默认 `20`                                                  |
 | `pricing`                | DeepSeek 单价覆盖；推荐用 `pricing.models.<modelId>` 逐模型填写                         | `input` / `cacheRead` / `output` / `peakMultiplier` / `currency` |
 
@@ -465,8 +469,20 @@ DSH 设置 → 「桌宠配置」：
 
 ### 4. 其他
 
-- 删除了不可用的「桌面独立窗口」功能：桌宠仅显示在 DSH Web 页面内（`shell.overlay`），不依赖独立浏览器窗口
+- Windows 桌面显示由独立 Electron 伴生组件提供；Host 停止、插件卸载或取消勾选时自动关闭，且不会阻挡宠物窗口之外的桌面点击
 - 余额动画仅在首次成功或档位变化时触发，避免重复播放
 - 诊断端点 `/dsh-pet-7340/turn-spend/debug` 只返回聚合计数、去标识事件与定价来源，不暴露会话 ID
 
 > 💡 高级：可在用户配置 `$DSH_HOME/dsh-pet/main-config.json` 顶层添加 `pricing.models.<modelId>` 覆盖各模型单价（`input` / `cacheRead` / `output` / `peakMultiplier` / `currency`）。旧的顶层 `pricing` 平铺格式仍兼容，但只作用于 `deepseek-v4-flash`。
+
+## Windows 桌面伴生组件
+
+首版为 Windows x64。插件本身仍是 DSH Web 插件，Electron 运行时单独安装，不会增加 `dsh-pet` npm 包体积：
+
+```powershell
+cd dsh-pet\desktop
+npm install
+npm run dist:win
+```
+
+源码开发时 Host 会自动发现 `desktop/dist/win-unpacked/dsh-pet-desktop.exe` 或本目录的 Electron。正式安装请将生成的 zip 直接解压到 `$DSH_HOME/dsh-pet/desktop/`，确认该目录内同时存在 `dsh-pet-desktop.exe` 与 `resources/`，然后在「设置 → 桌宠配置」勾选“启用桌面显示”。

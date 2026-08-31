@@ -7,12 +7,12 @@
   <a href="https://github.com/PC2005-cloud/dsh-pet"><img alt="stars" src="https://img.shields.io/github/stars/PC2005-cloud/dsh-pet?style=social"></a>
   <a href="https://github.com/PC2005-cloud/dsh-pet/blob/master/LICENSE"><img alt="license" src="https://img.shields.io/github/license/PC2005-cloud/dsh-pet?color=orange"></a>
   <a href="https://awesome-dsh-plugin.com"><img alt="awesome dsh plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness%20Web-8A2BE2">
+  <img alt="platform" src="https://img.shields.io/badge/platform-DSH%20Web%20%2B%20Windows-8A2BE2">
   <img alt="assets" src="https://img.shields.io/badge/assets-dynamic%20animations-ff69b4">
 </p>
 
 > A floating desktop pet for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI.
-> 一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 界面里的桌面宠物：待机呼吸、随机动作（含打瞌睡）、偶尔转向、屏幕漫游、点击反应、可拖拽。
+> 一只住在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 界面里的桌面宠物；安装可选伴生组件后，也能显示在 Windows 系统桌面，原有功能保持不变。
 
 ---
 
@@ -32,6 +32,7 @@ dsh plugin --profile web add dsh-pet@hevc     # Safari 版（HEVC-alpha mov）
 ## ✨ 功能特性
 
 - **DeepSeek Harness 原生插件**：只使用 DSH 的插件服务、槽位与 `session/event`，不修改 Harness 内核
+- **可选 Windows 桌面显示**：设置页勾选启用；一只宠物一个透明置顶窗口，Web 桌宠继续保留
 - **余额与单轮费用**：按当前 DSH 会话实际选择的 provider/model 查询余额；DeepSeek 对话完成后按实际 token usage 和对应模型单价显示本轮费用，切换会话不串值
 - **系统通知**：窗口失焦时可通知对话完成、生成失败、权限申请和待回答问题，权限只在用户点击时申请
 - **手绘风透明动画**：待机呼吸、打瞌睡、玩魔方、哼歌、炸毛、吐泡泡、玩水枪、小提琴演奏、蓝鲸现世、吃白饭、照镜子、三支舞、写代码、四季动作（放风筝、堆雪人、吃冰淇淋、放烟花……）全部无缝衔接
@@ -48,11 +49,16 @@ dsh plugin --profile web add dsh-pet@hevc     # Safari 版（HEVC-alpha mov）
 | 配置项                     | 说明                                                                                                                                            |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | 设置页「桌宠配置」         | DSH 设置 → 桌宠配置：图形化编辑**大小 / 位置 / 边距**，支持**多开**（添加/删除宠物，每只独立配置）；保存**即时生效**，恢复默认回落 config.jsonc |
+| `desktopEnabled`           | Windows 桌面显示总开关，默认 `false`；桌面组件未安装时设置页会明确提示且不会错误启用                                                            |
 | `pets`（config.jsonc）     | 默认宠物列表：`[{ "id", "size", "position": { "corner", "marginX", "marginY" } }]`；多只即多开，首只为「添加宠物」的默认模板                    |
 | `eventsRefreshSec.balance` | 余额刷新周期，默认 180 秒；点击桌宠或执行 `/balance` 可立即刷新                                                                                 |
 | `deepseekFullBalanceCny`   | DeepSeek 钱袋档位的满额参考值，默认 20 元                                                                                                       |
 
 > 说明：插件安装即用，配置均为可选；设置页保存的用户覆盖写入 `$DSH_HOME/dsh-pet/main-config.json`（用户层，优先于包内默认）。
+
+### Windows 桌面显示（可选）
+
+桌面组件独立于插件 npm 包。源码仓库中进入 `dsh-pet/desktop` 执行 `npm install` 和 `npm run dist:win`，再把生成的 zip 直接解压到 `$DSH_HOME/dsh-pet/desktop/`。重启 DSH 后，在「设置 → 桌宠配置」勾选“启用桌面显示”。
 
 ### 📄 高级自定义（直接编辑配置文件）
 

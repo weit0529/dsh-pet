@@ -4,16 +4,54 @@
 //       react / react/jsx-runtime / @deepseek-ai/* 保持外部 require（不打包）。
 import { defineConfig } from 'tsdown';
 
-export default defineConfig({
-  entry: {
-    client: 'src/client/index.ts',
-    index: 'src/host/index.ts',
+export default defineConfig([
+  {
+    entry: { client: 'src/client/index.ts' },
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    external: [/^@deepseek-ai\//, /^node:/],
+    dts: false,
+    outDir: 'lib',
+    clean: false,
   },
-  format: ['esm'],
-  platform: 'node',
-  target: 'es2020',
-  external: [/^@deepseek-ai\//, /^node:/],
-  dts: false,
-  outDir: 'lib',
-  clean: false,
-});
+  {
+    entry: { index: 'src/host/index.ts' },
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    external: [/^@deepseek-ai\//, /^node:/],
+    dts: false,
+    outDir: 'lib',
+    clean: false,
+  },
+  {
+    entry: { main: 'src/desktop/main.ts' },
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    external: ['electron', /^node:/],
+    dts: false,
+    outDir: 'desktop/lib',
+    clean: false,
+  },
+  {
+    entry: { renderer: 'src/desktop/renderer.ts' },
+    format: ['esm'],
+    platform: 'browser',
+    target: 'es2022',
+    dts: false,
+    outDir: 'desktop/lib',
+    clean: false,
+  },
+  {
+    entry: { preload: 'src/desktop/preload.ts' },
+    format: ['cjs'],
+    platform: 'node',
+    target: 'es2022',
+    external: ['electron'],
+    dts: false,
+    outDir: 'desktop/lib',
+    clean: false,
+  },
+]);

@@ -99,6 +99,10 @@ export function sanitizeUserConfigPatch(raw: unknown): JsonObject | null {
     if (typeof raw.notificationsEnabled !== 'boolean') return null;
     out.notificationsEnabled = raw.notificationsEnabled;
   }
+  if (raw.desktopEnabled !== undefined) {
+    if (typeof raw.desktopEnabled !== 'boolean') return null;
+    out.desktopEnabled = raw.desktopEnabled;
+  }
   if (raw.deepseekFullBalanceCny !== undefined) {
     const n = Number(raw.deepseekFullBalanceCny);
     if (!Number.isFinite(n) || n <= 0 || n > 1_000_000_000) return null;

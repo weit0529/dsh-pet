@@ -7,11 +7,11 @@
   <a href="https://github.com/PC2005-cloud/dsh-pet"><img alt="stars" src="https://img.shields.io/github/stars/PC2005-cloud/dsh-pet?style=social"></a>
   <a href="https://github.com/PC2005-cloud/dsh-pet/blob/master/LICENSE"><img alt="license" src="https://img.shields.io/github/license/PC2005-cloud/dsh-pet?color=orange"></a>
   <a href="https://awesome-dsh-plugin.com"><img alt="awesome dsh plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness%20Web-8A2BE2">
+  <img alt="platform" src="https://img.shields.io/badge/platform-DSH%20Web%20%2B%20Windows-8A2BE2">
   <img alt="assets" src="https://img.shields.io/badge/assets-dynamic%20animations-ff69b4">
 </p>
 
-A desktop pet living inside the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI: idle breathing, random actions (including dozing off), occasional turns, screen wandering, click reactions, and draggable — it can also display your LLM provider's balance/quota in real time (balance animations + a thinking bubble above the head).
+A pet for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI with an optional Windows desktop companion. Animations, wandering, click/drag, balance, and per-turn cost behavior are preserved in both views.
 
 This is not just a plugin — it's a **complete three-piece project**:
 

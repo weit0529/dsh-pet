@@ -7,11 +7,11 @@
   <a href="https://github.com/PC2005-cloud/dsh-pet"><img alt="stars" src="https://img.shields.io/github/stars/PC2005-cloud/dsh-pet?style=social"></a>
   <a href="https://github.com/PC2005-cloud/dsh-pet/blob/master/LICENSE"><img alt="license" src="https://img.shields.io/github/license/PC2005-cloud/dsh-pet?color=orange"></a>
   <a href="https://awesome-dsh-plugin.com"><img alt="awesome dsh plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness%20Web-8A2BE2">
+  <img alt="platform" src="https://img.shields.io/badge/platform-DSH%20Web%20%2B%20Windows-8A2BE2">
   <img alt="assets" src="https://img.shields.io/badge/assets-dynamic%20animations-ff69b4">
 </p>
 
-> A floating desktop pet for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI: idle breathing, random actions (including dozing off), occasional turns, screen wandering, click reactions, and draggable.
+> A pet for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web UI with an optional Windows desktop companion. The original Web behavior remains available.
 
 ---
 
@@ -31,6 +31,7 @@ Restart `dsh web` and the pet appears in the bottom-right corner — all transpa
 ## ✨ Features
 
 - **Native DeepSeek Harness plugin**: uses DSH plugin services, slots, and `session/event` without modifying Harness core
+- **Optional Windows desktop view**: enable it from settings after installing `dsh-pet-desktop`; the existing Web pet remains unchanged
 - **Balance and per-turn cost**: follows the active DSH session's actual provider/model; completed DeepSeek turns use reported token usage and that model's price, isolated per session
 - **System notifications**: optional notifications for completion, failures, approval requests, and questions while the window is unfocused; permission is requested only from a user click
 - **Hand-drawn style transparent animations**: idle breathing, dozing off, playing with a Rubik's cube, humming, hair-raising, blowing bubbles, playing with a water gun, playing violin, the whale emerging, eating rice, looking in the mirror, three dances, writing code, seasonal actions (kite flying, snowman building, ice cream eating, fireworks…) — all seamlessly chained

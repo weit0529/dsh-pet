@@ -1,0 +1,38 @@
+{
+  "name": "dsh-pet-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional Windows desktop companion for the DeepSeek Harness dsh-pet plugin",
+  "author": "PC2005-cloud",
+  "type": "module",
+  "main": "lib/main.js",
+  "scripts": {
+    "build:code": "npm --prefix .. run bundle",
+    "start": "npm run build:code && electron .",
+    "dist:win": "npm run build:code && electron-builder --win zip",
+    "smoke": "npm run build:code && node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.deepseek.harness.dsh-pet-desktop",
+    "productName": "dsh-pet-desktop",
+    "asar": true,
+    "files": [
+      "lib/**",
+      "renderer.html",
+      "package.json"
+    ],
+    "artifactName": "dsh-pet-desktop-win-x64.zip",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "zip"
+      ]
+    }
+  }
+}

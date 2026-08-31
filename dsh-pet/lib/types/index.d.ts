@@ -8,7 +8,7 @@
  *   在 import 本包时获得智能提示和类型检查。纯类型文件，不影响运行时。
  *
  * 【对应实现】
- *   lib/index.js —— 注册资源、配置、余额、会话计费与诊断路由，并注册 /balance 命令。
+ *   lib/index.js —— 注册资源、配置、余额、会话计费、桌面伴生进程与诊断路由，并注册 /balance 命令。
  *
  * ============================================================================
  * @module dsh-pet
@@ -22,7 +22,7 @@ export declare const name = 'pet';
 export declare const inject: string[];
 
 /**
- * 宿主插件主体：注册 /dsh-pet-7340 前缀路由、会话事件计费和 /balance 命令。
+ * 宿主插件主体：注册 /dsh-pet-7340 前缀路由、会话事件计费、桌面伴生进程和 /balance 命令。
  */
 export declare function apply(ctx: Context): void;
 

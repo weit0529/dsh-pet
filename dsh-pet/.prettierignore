@@ -1,5 +1,8 @@
 lib
 node_modules
+desktop/node_modules
+desktop/dist
+desktop/lib
 assets
 cordis.patch.yml
 package-lock.json

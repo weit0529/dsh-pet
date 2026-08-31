@@ -35,6 +35,8 @@ temp/
 # ── dsh-pet 构建产物（由 src/ 用 tsdown 产出，不入仓库；依赖 npm run build 生成）──
 # 仅忽略构建出的 JS；lib/types 为手写类型声明，保留跟踪。
 dsh-pet/lib/*.js
+dsh-pet/desktop/lib/
+dsh-pet/desktop/dist/
 
 # ── IDE / 编辑器 ──
 .idea/

@@ -8,7 +8,17 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
-  { ignores: ['lib/**', 'scripts/**', 'assets/**', 'node_modules/**'] },
+  {
+    ignores: [
+      'lib/**',
+      'desktop/lib/**',
+      'desktop/dist/**',
+      'desktop/node_modules/**',
+      'scripts/**',
+      'assets/**',
+      'node_modules/**',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -30,7 +40,7 @@ export default tseslint.config(
   },
   {
     // 配置文件本身用的 ESM import，无浏览器代码，no-undef 放开
-    files: ['eslint.config.js'],
+    files: ['eslint.config.js', 'desktop/scripts/**/*.mjs'],
     rules: {
       'no-undef': 'off',
     },

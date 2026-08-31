@@ -4,6 +4,7 @@
 import { makePetUI } from './pet';
 import { makePetConfigSection, NS, zh, en } from './settings';
 import { startNotify } from './notify';
+import { startDesktopSessionHeartbeat } from './desktop-session';
 import type * as ReactNS from 'react';
 
 /**
@@ -29,6 +30,9 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       // 本地化字典（设置页文案）
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-pet: dictionaries');
       const t = ctx.locale.bind(NS);
+
+      // 桌面伴生程序不在 Web React 树内；用心跳同步最后聚焦的 DSH 会话。
+      ctx.effect(() => startDesktopSessionHeartbeat(ctx.sessions?.list), 'dsh-pet: desktop active-session heartbeat');
 
       // 系统通知：订阅 DSH 事件流（对话完成/生成失败/权限申请/用户选择），窗口失焦时弹出
       ctx.effect(() => {

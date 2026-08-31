@@ -66,6 +66,11 @@ export async function fetchBalanceState(sessionId?: string): Promise<BalanceStat
   const query = sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : '';
   const res = await getBalance('/dsh-pet-7340/balance' + query);
   const raw: RawBalanceResult = await res.json().catch(() => null);
+  return parseBalanceResult(raw);
+}
+
+/** 解析 Host 余额响应；Web fetch 与 Electron IPC 共用同一校验逻辑。 */
+export function parseBalanceResult(raw: RawBalanceResult): BalanceState {
   if (!raw || typeof raw !== 'object') throw new Error('dsh-pet: /dsh-pet-7340/balance 响应非法');
 
   const provider = String(raw.provider ?? 'unknown');

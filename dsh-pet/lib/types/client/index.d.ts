@@ -7,7 +7,7 @@
  *   给 lib/client.js（浏览器半侧）提供类型信息。纯类型文件，不影响运行时。
  *
  * 【对应实现】
- *   lib/client.js —— 注册宠物到官方 `shell.overlay` 列表槽，播放动画。
+ *   lib/client.js —— 注册宠物到官方 `shell.overlay` 列表槽，并同步桌面伴生程序的活动会话。
  *
  * ============================================================================
  * @module dsh-pet/client
@@ -20,6 +20,6 @@ export declare const name = 'pet';
 export declare const inject: string[];
 
 /**
- * 客户端插件主体：注册桌宠 overlay、设置页与系统通知。
+ * 客户端插件主体：注册桌宠 overlay、桌面开关设置页、活动会话心跳与系统通知。
  */
 export declare function apply(ctx: Context): void;

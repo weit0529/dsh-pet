@@ -11,11 +11,17 @@ const defaults = assertClientConfig(JSON.parse(stripJsonc(defaultSource)));
 test('默认 JSONC 配置通过完整校验', () => {
   assert.ok(defaults.pets.length > 0);
   assert.ok(defaults.animations.idle.length > 0);
+  assert.equal(defaults.desktopEnabled, false);
   assert.equal(defaults.deepseekFullBalanceCny, 20);
 });
 
 test('用户覆盖只替换提交字段', () => {
-  const merged = applyUserOverrides(defaults, { notificationsEnabled: false, deepseekFullBalanceCny: 100 });
+  const merged = applyUserOverrides(defaults, {
+    desktopEnabled: true,
+    notificationsEnabled: false,
+    deepseekFullBalanceCny: 100,
+  });
+  assert.equal(merged.desktopEnabled, true);
   assert.equal(merged.notificationsEnabled, false);
   assert.equal(merged.deepseekFullBalanceCny, 100);
   assert.deepEqual(merged.animations, defaults.animations);

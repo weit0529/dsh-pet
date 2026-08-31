@@ -1,7 +1,7 @@
 {
   "name": "dsh-pet",
   "version": "0.2.0",
-  "description": "A floating desktop pet for the DeepSeek Harness Web UI: idle breathing, occasional direction turns, random actions, and screen wandering.",
+  "description": "A DeepSeek Harness Web pet with an optional Windows desktop companion, animations, wandering, balance, and per-turn cost bubbles.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -69,7 +69,9 @@
     "lint": "eslint .",
     "test": "node --experimental-strip-types --test --test-isolation=none scripts/*.test.ts",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "desktop:start": "npm --prefix desktop start",
+    "desktop:dist": "npm --prefix desktop run dist:win"
   },
   "license": "MIT",
   "dsh": {

@@ -57,6 +57,8 @@ export interface Pet {
 
 /** config.jsonc 全集——运行时直接使用（ANIM 即本类型） */
 export interface ClientConfig {
+  /** Windows 桌面伴生程序总开关；Web overlay 不受影响。 */
+  desktopEnabled: boolean;
   /** 系统通知总开关：true=对话完成/生成失败/输出截断/权限申请/用户选择在窗口失焦时弹出系统通知；缺失即配置错误 */
   notificationsEnabled: boolean;
   pets: Pet[];

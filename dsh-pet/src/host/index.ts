@@ -20,6 +20,7 @@
  * TODO(类型)：peer 依赖类型包本地暂不可解析，ctx/req/res 暂用 any；
  *             依赖可解析后替换为 DSH 官方类型。
  */
+import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync } from 'node:fs';
 import { readFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -30,6 +31,9 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { matchBalanceProvider, queryBalance, type BalanceResult } from './balance';
 import { calculateTokenCost, createPricingManager, type Pricing, type PricingSource } from './pricing-catalog';
 import { asJsonObject, mergeUserConfig, sanitizeUserConfigPatch, type JsonObject } from './user-config';
+import { applyUserOverrides, assertClientConfig, stripJsonc, type UserOverrides } from '../client/config';
+import { DesktopManager } from './desktop-manager';
+import { DesktopSessionTracker } from './desktop-session';
 
 /** 插件行 id（与 cordis.patch.yml 一致） */
 export const name = 'pet';
@@ -172,6 +176,8 @@ export function apply(ctx: any): void {
   const thumbUserRoot = join(userRoot, 'main-animation');
   // 手动触发计数按会话隔离：/balance 只唤醒发出命令的那一个会话页面。
   const balanceTriggerCounts = new Map<string, number>();
+  const desktopSessions = new DesktopSessionTracker();
+  const desktopToken = randomBytes(32).toString('hex');
 
   // 余额请求单飞：同一 provider 同时只允许一个上游请求，短暂复用结果吸收点击/轮询抖动。
   const balanceInFlight = new Map<string, Promise<BalanceResult>>();
@@ -317,6 +323,7 @@ export function apply(ctx: any): void {
     ) => {
       const sessionId = String(session.id ?? '');
       if (!sessionId) return;
+      desktopSessions.sessionEvent(sessionId);
       diagAppend(event.type, event.data);
 
       if (event.type === 'turn/start') {
@@ -440,6 +447,23 @@ export function apply(ctx: any): void {
     return parsed;
   };
 
+  /** 默认 JSONC + 用户覆盖的完整运行时配置，供桌面伴生程序读取。 */
+  const readMergedClientConfig = async () => {
+    const source = await readFile(join(PACKAGE_ROOT, 'assets', 'config.jsonc'), 'utf8');
+    const defaults = assertClientConfig(JSON.parse(stripJsonc(source)));
+    const user = (await readUserConfig()) as UserOverrides;
+    return assertClientConfig(applyUserOverrides(defaults, user));
+  };
+
+  // WebServer 即使监听 0.0.0.0，桌面子进程也固定走 loopback，避免把控制令牌发到外网网卡。
+  const desktopManager = new DesktopManager({
+    packageRoot: PACKAGE_ROOT,
+    userRoot,
+    origin: 'http://127.0.0.1:' + String(ctx.webServer.port),
+    token: desktopToken,
+  });
+  const desktopAuthorized = (req: IncomingMessage): boolean => req.headers.authorization === 'Bearer ' + desktopToken;
+
   ctx.effect(
     () =>
       ctx.webServer.register({
@@ -452,6 +476,85 @@ export function apply(ctx: any): void {
             rest = decodeURIComponent(url.pathname.slice(ROUTE_PREFIX.length + 1));
           } catch {
             sendJson(res, 400, { error: 'malformed URL encoding' });
+            return;
+          }
+
+          // Web 页面会话心跳：桌面端优先跟随最后聚焦的 DSH 页面。
+          if (rest === 'desktop/session') {
+            if (req.method !== 'POST') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            try {
+              const parsed = JSON.parse(await readBody(req, 4_096)) as Record<string, unknown>;
+              const clientId = typeof parsed.clientId === 'string' ? parsed.clientId : '';
+              const rawSessionId = parsed.sessionId;
+              const sessionId = rawSessionId === null ? undefined : String(rawSessionId ?? '');
+              if (
+                clientId.length === 0 ||
+                clientId.length > 128 ||
+                typeof parsed.focused !== 'boolean' ||
+                (sessionId !== undefined && !validSessionId(sessionId))
+              ) {
+                sendJson(res, 400, { error: 'invalid desktop session heartbeat' });
+                return;
+              }
+              desktopSessions.heartbeat({ clientId, sessionId, focused: parsed.focused });
+              res.writeHead(204, { 'cache-control': 'no-store' });
+              res.end();
+            } catch {
+              sendJson(res, 400, { error: 'invalid desktop session heartbeat' });
+            }
+            return;
+          }
+
+          // 设置页读取桌面组件状态；不返回进程路径或令牌。
+          if (rest === 'desktop/status') {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            sendJson(res, 200, desktopManager.status());
+            return;
+          }
+
+          // Electron 渲染器首屏就绪回执：让设置页显示真实运行状态，而不只依赖进程已 spawn。
+          if (rest === 'desktop/ready') {
+            if (req.method !== 'POST') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            if (!desktopAuthorized(req)) {
+              sendJson(res, 401, { error: 'desktop token required' });
+              return;
+            }
+            desktopManager.markReady();
+            res.writeHead(204, { 'cache-control': 'no-store' });
+            res.end();
+            return;
+          }
+
+          // 仅桌面伴生进程可读取的完整快照；Bearer 令牌每次 Host 启动随机生成。
+          if (rest === 'desktop/snapshot') {
+            if (req.method !== 'GET') {
+              sendJson(res, 405, { error: 'method not allowed' });
+              return;
+            }
+            if (!desktopAuthorized(req)) {
+              sendJson(res, 401, { error: 'desktop token required' });
+              return;
+            }
+            try {
+              sendJson(res, 200, {
+                config: await readMergedClientConfig(),
+                sessionId: desktopSessions.current() ?? null,
+              });
+            } catch (error) {
+              sendJson(res, 500, {
+                error: 'desktop snapshot unavailable',
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
             return;
           }
 
@@ -496,12 +599,21 @@ export function apply(ctx: any): void {
                 sendJson(res, 400, { error: 'invalid config patch' });
                 return;
               }
+              if (cleanPatch.desktopEnabled === true && !desktopManager.canStart()) {
+                sendJson(res, 409, {
+                  error: 'desktop companion unavailable',
+                  message: '未找到 dsh-pet-desktop，请先安装 Windows 桌面伴生组件',
+                  status: desktopManager.status(),
+                });
+                return;
+              }
               try {
                 const merged = mergeUserConfig(await readUserConfig(), cleanPatch);
                 await mkdir(userRoot, { recursive: true });
                 await writeFile(userConfigPath, JSON.stringify(merged, null, 2), 'utf8');
                 await loadPricingOverrides();
-                sendJson(res, 200, { ok: true });
+                const desktop = desktopManager.reconcile(merged.desktopEnabled === true);
+                sendJson(res, 200, { ok: true, desktop });
               } catch (error) {
                 sendJson(res, 500, {
                   error: 'failed to save user config',
@@ -521,7 +633,8 @@ export function apply(ctx: any): void {
                 return;
               }
               await loadPricingOverrides();
-              sendJson(res, 200, { ok: true });
+              const desktop = desktopManager.reconcile(false);
+              sendJson(res, 200, { ok: true, desktop });
               return;
             }
             sendJson(res, 405, { error: 'method not allowed' });
@@ -715,6 +828,14 @@ export function apply(ctx: any): void {
       }),
     'dsh-pet: /dsh-pet-7340 asset route',
   );
+
+  // 启动时恢复用户保存的桌面开关；卸载插件/停止 DSH 时回收所有原生窗口。
+  ctx.effect(() => {
+    void readUserConfig()
+      .then((user) => desktopManager.reconcile(user.desktopEnabled === true))
+      .catch((error) => console.warn('[dsh-pet] desktop config restore failed', error));
+    return () => desktopManager.dispose();
+  }, 'dsh-pet: desktop companion lifecycle');
 
   // /balance 斜杠命令：只递增接收该命令的会话计数。
   ctx.effect(

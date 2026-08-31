@@ -70,6 +70,14 @@ export const zh = {
   loadError: '加载配置失败',
   invalid: '请检查输入：大小需为 120–2000px，边距需为有效数字。',
   busy: '保存中…',
+  desktopToggle: '启用桌面显示',
+  desktopToggleHint: '在 Windows 系统桌面显示一份桌宠；Web 页面中的桌宠保持不变。',
+  desktopChecking: '正在检查桌面组件…',
+  desktopMissing: '未安装桌面伴生组件，请先安装 dsh-pet-desktop。',
+  desktopStopped: '桌面显示已关闭',
+  desktopStarting: '桌面组件正在启动…',
+  desktopRunning: '桌面组件已运行',
+  desktopError: '桌面组件启动失败',
   notifyToggle: '系统通知',
   notifyToggleHint: '对话完成 / 生成失败 / 权限申请 / 用户选择，在窗口失焦时弹出系统级通知（桌面右下角）。',
   notifyGetPermission: '获取权限',
@@ -117,6 +125,14 @@ export const en = {
   loadError: 'Failed to load config',
   invalid: 'Check your input: size must be 120–2000px and margins must be finite numbers.',
   busy: 'Saving…',
+  desktopToggle: 'Show on desktop',
+  desktopToggleHint: 'Show another pet on the Windows desktop; the existing Web pet remains unchanged.',
+  desktopChecking: 'Checking desktop companion…',
+  desktopMissing: 'dsh-pet-desktop is not installed.',
+  desktopStopped: 'Desktop display is off',
+  desktopStarting: 'Desktop companion is starting…',
+  desktopRunning: 'Desktop companion is running',
+  desktopError: 'Desktop companion failed to start',
   notifyToggle: 'System notifications',
   notifyToggleHint:
     'OS-level toasts (bottom-right of the desktop) for conversation completion, failures, permission requests, and questions — only while this window is unfocused.',
@@ -191,6 +207,14 @@ export function makePetConfigSection(rt: {
     }
   };
 
+  interface DesktopStatus {
+    configured: boolean;
+    available: boolean;
+    state: 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
+    runtime?: 'installed' | 'development' | 'environment';
+    message?: string;
+  }
+
   return function PetConfigSection() {
     const initPets = petBridge.current;
     const [pets, setPets] = useState<Pet[]>(initPets.map((p) => ({ ...p, position: { ...p.position } })));
@@ -210,6 +234,9 @@ export function makePetConfigSection(rt: {
 
     // 系统通知总开关（全局：读写用户级配置 main-config.json 的 notificationsEnabled；即时生效）
     const [notifyEnabled, setNotifyEnabled] = useState(petBridge.currentConfig?.notificationsEnabled ?? false);
+    // Windows 桌面伴生组件开关与实时运行状态。
+    const [desktopEnabled, setDesktopEnabled] = useState(petBridge.currentConfig?.desktopEnabled ?? false);
+    const [desktopStatus, setDesktopStatus] = useState<DesktopStatus | null>(null);
     // 权限申请按钮的反馈（就地显示在按钮旁，与全局保存反馈分离）
     const [permMsg, setPermMsg] = useState<{ kind: 'ok' | 'err' | ''; text: string }>({ kind: '', text: '' });
     useEffect(() => {
@@ -225,6 +252,7 @@ export function makePetConfigSection(rt: {
           const merged = assertClientConfig(applyUserOverrides(defaults, user));
           if (!alive) return;
           setNotifyEnabled(merged.notificationsEnabled);
+          setDesktopEnabled(merged.desktopEnabled);
           if (!petBridge.template) petBridge.template = defaults.pets[0];
           const nextPets = merged.pets.map((p) => ({ ...p, position: { ...p.position } }));
           setPets(nextPets);
@@ -238,6 +266,69 @@ export function makePetConfigSection(rt: {
         alive = false;
       };
     }, []);
+
+    const refreshDesktopStatus = async (): Promise<void> => {
+      try {
+        const response = await fetch('/dsh-pet-7340/desktop/status', { cache: 'no-store' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        setDesktopStatus((await response.json()) as DesktopStatus);
+      } catch {
+        setDesktopStatus(null);
+      }
+    };
+    useEffect(() => {
+      let alive = true;
+      const poll = async () => {
+        if (!alive) return;
+        await refreshDesktopStatus();
+      };
+      void poll();
+      const timer = window.setInterval(() => void poll(), 2_000);
+      return () => {
+        alive = false;
+        window.clearInterval(timer);
+      };
+    }, []);
+
+    const desktopStatusText = (): string => {
+      if (!desktopStatus) return t('desktopChecking');
+      if (!desktopStatus.available) return t('desktopMissing');
+      if (desktopStatus.state === 'running') return t('desktopRunning');
+      if (desktopStatus.state === 'starting') return t('desktopStarting');
+      if (desktopStatus.state === 'error')
+        return t('desktopError') + (desktopStatus.message ? '：' + desktopStatus.message : '');
+      return t('desktopStopped');
+    };
+
+    const toggleDesktop = async (value: boolean) => {
+      setBusy(true);
+      setMsg({ kind: '', text: '' });
+      try {
+        const response = await fetch('/dsh-pet-7340/config', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ desktopEnabled: value }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const message = typeof result?.message === 'string' ? result.message : t('desktopMissing');
+          throw new Error(message);
+        }
+        setDesktopEnabled(value);
+        if (petBridge.currentConfig) {
+          const nextConfig = { ...petBridge.currentConfig, desktopEnabled: value };
+          petBridge.currentConfig = nextConfig;
+          petBridge.syncConfig(nextConfig);
+        }
+        if (result?.desktop) setDesktopStatus(result.desktop as DesktopStatus);
+        else await refreshDesktopStatus();
+        setMsg({ kind: 'ok', text: t('saved') });
+      } catch (error) {
+        setMsg({ kind: 'err', text: error instanceof Error ? error.message : t('loadError') });
+      } finally {
+        setBusy(false);
+      }
+    };
 
     const toggleNotify = async (v: boolean) => {
       setBusy(true);
@@ -359,10 +450,12 @@ export function makePetConfigSection(rt: {
         setPets(defs.map((p) => ({ ...p, position: { ...p.position } })));
         setSelId(defs[0]?.id ?? '');
         setNotifyEnabled(defaultConfig.notificationsEnabled);
+        setDesktopEnabled(defaultConfig.desktopEnabled);
         petBridge.current = defs;
         petBridge.currentConfig = defaultConfig;
         petBridge.syncConfig(defaultConfig);
         void reloadNotifications();
+        await refreshDesktopStatus();
         setMsg({ kind: 'ok', text: t('saved') });
       } catch {
         setMsg({ kind: 'err', text: t('loadError') });
@@ -604,6 +697,46 @@ export function makePetConfigSection(rt: {
               style: { margin: 0, fontSize: '13px', color: 'var(--dsw-alias-label-tertiary)' },
               children: t('emptyPets'),
             }),
+
+        // Windows 桌面显示（只控制伴生组件；Web overlay 始终保留）
+        h('label', {
+          style: {
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center',
+            marginTop: '8px',
+            fontSize: '13px',
+            color: 'var(--dsw-alias-label-primary)',
+          },
+          children: [
+            h('input', {
+              type: 'checkbox',
+              checked: desktopEnabled,
+              disabled: busy || (desktopStatus?.available === false && !desktopEnabled),
+              onChange: (e: ChangeEvent<HTMLInputElement>) => void toggleDesktop(e.target.checked),
+              style: { width: '16px', height: '16px', accentColor: 'var(--dsw-alias-state-business-primary)' },
+            }),
+            h('span', { children: t('desktopToggle') }),
+            h('span', {
+              style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+              children: t('desktopToggleHint'),
+            }),
+          ],
+        }),
+        h('div', {
+          style: {
+            marginLeft: '24px',
+            fontSize: '11px',
+            lineHeight: '16px',
+            color:
+              desktopStatus?.state === 'error' || desktopStatus?.available === false
+                ? 'var(--dsw-alias-state-error-primary)'
+                : desktopStatus?.state === 'running'
+                  ? 'var(--dsw-alias-state-ok-primary)'
+                  : 'var(--dsw-alias-label-tertiary)',
+          },
+          children: desktopStatusText(),
+        }),
 
         // 系统通知总开关（全局，写入用户级配置；即时生效，不归属单个宠物）
         h('label', {
